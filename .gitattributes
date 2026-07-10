@@ -1,0 +1,4 @@
+# !!! CRLF TRAP !!! — the law scripts are bash; a CRLF checkout breaks every
+# hook and gate (quota-gate.sh etc. fail on \r). Force LF repo-wide: everything
+# here is md/sh/py, all happy with LF on Windows (git-bash + python).
+* text=auto eol=lf
