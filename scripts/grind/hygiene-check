@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# hygiene-check — gitignore + untracked-noise hygiene for /grind windows.
+#
+# WHY: a prior autonomous run left 455 untracked files (scratch worktrees +
+# db.sqlite3) staring at the founder, and accumulated 124 unrelated files on one
+# trunk branch. This guard makes the loop keep `git status` boringly clean:
+#   1. `verify`  — report whether required .gitignore entries exist + whether the
+#                  tree has unexpected untracked files. Exit 0 = clean, 3 = needs
+#                  gitignore fix, 4 = unexpected untracked files present.
+#   2. `fix`     — append any MISSING required .gitignore entries (idempotent).
+#                  Prints the entries it added so the loop can stage+commit them
+#                  on the feature branch BEFORE other work. Never removes lines.
+#
+# Required entries = scratch noise that must NEVER be tracked or shown as dirty:
+#   .claude/worktrees/        (grind/dev worktree scratch dirs)
+#   db.sqlite3                (local sqlite dev db)
+#   *.tmp                     (grind atomic-write temps + generic scratch)
+#   graphify-out/cache/       (graphify regenerable extraction cache)
+#   graphify-out/cost.json    (graphify local token-spend tracker)
+#   graphify-out/.graphify_*  (graphify per-machine sidecars: abs python path, run labels)
+#
+# WHY graphify entries are here (self-heal): they were repeatedly lost because an
+# appended .gitignore edit was left UNCOMMITTED while a concurrent autonomous
+# session rebased the shared working tree (rebase/checkout discards uncommitted
+# changes — it was never a linter). Owning them here means every grind/semi-grind
+# window re-asserts them if anything drops them, so no human "glance at .gitignore"
+# is ever required. The committed-on-dev block (PR #73) is the primary guarantee;
+# this is the backstop.
+#
+# Untracked-noise check: after the required ignores are in place, any remaining
+# `git status --porcelain` "??" entry is UNEXPECTED — the loop must either track
+# it (if it is real work) or ignore it (if it is noise), never leave it dangling.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 1
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+
+GITIGNORE="$ROOT/.gitignore"
+
+# Entries the loop guarantees are present. One per line; exact-match against
+# trimmed .gitignore lines so we never duplicate an existing rule.
+REQUIRED_IGNORES=(
+  ".claude/worktrees/"
+  "db.sqlite3"
+  "*.tmp"
+  "graphify-out/cache/"
+  "graphify-out/cost.json"
+  "graphify-out/.graphify_*"
+)
+
+# Print required entries that are NOT already present (exact trimmed match).
+missing_ignores() {
+  local entry line found
+  for entry in "${REQUIRED_IGNORES[@]}"; do
+    found=""
+    if [ -f "$GITIGNORE" ]; then
+      while IFS= read -r line; do
+        # trim leading/trailing whitespace
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ "$line" = "$entry" ] && { found=1; break; }
+      done < "$GITIGNORE"
+    fi
+    [ -z "$found" ] && printf '%s\n' "$entry"
+  done
+}
+
+case "${1:-verify}" in
+  fix)
+    miss="$(missing_ignores)"
+    if [ -z "$miss" ]; then
+      echo "hygiene: .gitignore already covers all required scratch-noise entries"
+      exit 0
+    fi
+    {
+      printf '\n# !!! GRIND HYGIENE !!! scratch noise — never tracked, never shown dirty.\n'
+      printf '# Added by scripts/grind/hygiene-check so autonomous windows stay clean.\n'
+      printf '%s\n' "$miss"
+    } >> "$GITIGNORE"
+    echo "hygiene: appended missing .gitignore entries:"
+    printf '%s\n' "$miss" | sed 's/^/  + /'
+    grind_audit "hygiene" "appended gitignore: $(printf '%s' "$miss" | tr '\n' ',')"
+    echo "Stage + commit .gitignore on the feature branch BEFORE other work."
+    ;;
+
+  verify)
+    rc=0
+    miss="$(missing_ignores)"
+    if [ -n "$miss" ]; then
+      echo "!!! GRIND HYGIENE: .gitignore missing required scratch-noise entries:" >&2
+      printf '%s\n' "$miss" | sed 's/^/  - /' >&2
+      echo "Run: bash $HERE/hygiene-check fix" >&2
+      rc=3
+    fi
+    # Unexpected untracked files (after ignores are honored). grind's own
+    # bookkeeping under .claude/grind/ is expected and excluded from the count.
+    untracked="$(git status --porcelain 2>/dev/null | grep '^??' | sed 's/^?? //' | grep -v '^\.claude/grind/')"
+    if [ -n "$untracked" ]; then
+      echo "!!! GRIND HYGIENE: unexpected untracked files (track them or ignore them — do not leave noise):" >&2
+      printf '%s\n' "$untracked" | sed 's/^/  - /' >&2
+      [ "$rc" -eq 0 ] && rc=4
+    fi
+    [ "$rc" -eq 0 ] && echo "hygiene: clean (gitignore covers scratch noise; no unexpected untracked files)"
+    exit "$rc"
+    ;;
+
+  *)
+    grind_die "usage: hygiene-check {verify|fix}"
+    ;;
+esac

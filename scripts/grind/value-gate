@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# value-gate — before a tier-(b)/(c) self-generated task, require it to name an
+# OBJECTIVE win, so /grind cannot burn the window on "safe-looking" busywork that
+# only creates review burden (codex's core warning). Model-judged "is this
+# valuable?" is itself rationalizable, so the bar is a measurable token, not vibes:
+#
+#   - a backlog id closed:   TODO-X | T24-N | SEC-N | LP-N | E-N | PR #N | R-NNN
+#   - a coverage increase:   the word "coverage" + a +N or %% delta
+#   - fewer lint/type errors: "lint" or "type" + a -N delta
+#
+# Usage: value-gate "<justification string>"
+#   exit 0 if the justification names an objective win; non-zero (rejected) otherwise.
+# The loop must then ACTUALLY deliver it; the claim is recorded to the audit log
+# so the founder can verify post-hoc.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 1
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+
+just="${1:-}"
+[ -n "$just" ] || grind_die 'usage: value-gate "<justification naming an objective win>"'
+
+# objective-win patterns
+if printf '%s' "$just" | grep -qiE '(TODO-[A-Z]+|T24-[0-9]+|SEC-[0-9]+|LP-?[0-9]+|E[0-9]+|PR[ ]*#?[0-9]+|R-[0-9]{3})' \
+   || printf '%s' "$just" | grep -qiE 'coverage.*[+][0-9]|coverage.*[0-9]+%' \
+   || printf '%s' "$just" | grep -qiE '(lint|type|mypy|eslint|ruff).*(-[0-9]+|fewer|down|0 errors)'; then
+  grind_audit "value_gate" "PASS claim=$just"
+  echo "PASS"; exit 0
+fi
+
+echo "!!! GRIND VALUE-GATE: rejected — no objective win named." >&2
+echo "Justification was: $just" >&2
+echo "Name a closed backlog id (TODO-x / T24-n / PR #n), a coverage increase, or a lint/type-error decrease — or skip this task and log it." >&2
+grind_audit "value_gate" "REJECT claim=$just"
+echo "REJECT"; exit 1

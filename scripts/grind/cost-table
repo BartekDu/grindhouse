@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# cost-table — empirical per-task-type cost, measured as 5h-quota %-DROP per task.
+#
+# Codex's "estimation is fiction" fix: instead of guessing a task's cost, we
+# record what tasks of each TYPE actually cost (the drop in five_hour_pct_left
+# across the task) and budget against the measured p90 (fat-tail reserve).
+#
+# Usage:
+#   cost-table record TYPE DELTA_PCT     append a measured %-drop sample
+#   cost-table p90 TYPE                  print p90 %-drop for TYPE (or a conservative default)
+#
+# Task TYPEs (free-form, but stay consistent): test-add | lint-fix | backlog-port
+#   | doc | observability | fanout | misc
+#
+# Bootstrap defaults (used until >=3 samples exist) are deliberately CONSERVATIVE
+# (high) so early windows under-commit rather than overshoot the floor.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 1
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+
+default_for() {
+  case "$1" in
+    doc|lint-fix)        echo 6  ;;
+    test-add|observability) echo 12 ;;
+    backlog-port|misc)   echo 20 ;;
+    fanout)              echo 25 ;;
+    *)                   echo 20 ;;  # unknown type => treat as large
+  esac
+}
+
+cmd="${1:-}"; type="${2:-}"
+case "$cmd" in
+  record)
+    delta="${3:-}"
+    [ -n "$type" ] && [ -n "$delta" ] || grind_die "usage: cost-table record TYPE DELTA_PCT"
+    grind_gj cost-record "$GRIND_COST" "$type" "$delta"
+    grind_audit "cost_record" "type=${type} delta_pct=${delta}"
+    ;;
+  p90)
+    [ -n "$type" ] || grind_die "usage: cost-table p90 TYPE"
+    grind_gj cost-p90 "$GRIND_COST" "$type" "$(default_for "$type")"
+    ;;
+  *)
+    grind_die "usage: cost-table {record TYPE DELTA_PCT | p90 TYPE}"
+    ;;
+esac

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# scope-guard — pre-commit hook. Makes the /grind "core focus" a CONTRACT, not a
+# phrase: rejects any staged path outside the confirmed focus globs.
+#
+# NO-OP unless a grind window is active (.claude/grind/.active present), so it
+# never interferes with the founder's normal commits. When active it reads the
+# focus contract from state.json and fails the commit on out-of-focus paths.
+#
+# Always-allowed regardless of focus: grind's own bookkeeping (.claude/grind/**)
+# and the grind harness itself (scripts/grind/**) — the loop must be able to
+# commit its state/logs.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 0
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+
+grind_active || exit 0   # not in a grind window → normal commit, do nothing
+
+# --- worktree law (2026-07-10): builders NEVER commit from the shared checkout.
+# During a window, any commit on a grind/feat/* branch must come from a working
+# tree under .claude/worktrees/ — this is what stops parallel agent swarms from
+# competing over the same files. The orchestrator (campaign branch) is exempt:
+# it only merges. Etiquette failed here before; now it's a hook, not a hope.
+branch="$(git branch --show-current 2>/dev/null || echo "")"   # unborn-HEAD-safe (rev-parse errors there)
+case "$branch" in
+  grind/feat/*)
+    case "$ROOT" in
+      */.claude/worktrees/*) : ;;  # inside a worktree → fine
+      *)
+        echo "!!! GRIND SCOPE-GUARD: commit blocked — builder branch outside a worktree !!!" >&2
+        echo "Branch '$branch' must be worked in a worktree under .claude/worktrees/ (got: $ROOT)." >&2
+        echo "Fix: git worktree add .claude/worktrees/<slug> $branch  — then commit from there." >&2
+        grind_audit "scope_guard" "BLOCKED commit; builder branch=$branch outside worktree root=$ROOT"
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+
+staged="$(git diff --cached --name-only)"
+[ -z "$staged" ] && exit 0
+
+allowed="$(grind_gj focus-globs "$GRIND_STATE" allowed)"
+forbidden="$(grind_gj focus-globs "$GRIND_STATE" forbidden)"
+
+# glob match via python (program from heredoc on stdin; data via argv — never
+# mix the two on stdin). ** matches across /, * within a segment, ? one char.
+violation="$("$GRIND_PYTHON" - "$allowed" "$forbidden" "$staged" <<'PY'
+import sys, re
+allowed = [g for g in sys.argv[1].splitlines() if g.strip()]
+forbidden = [g for g in sys.argv[2].splitlines() if g.strip()]
+staged = sys.argv[3].splitlines()
+always = ["scripts/grind/**", ".claude/grind/**"]
+def to_re(glob):
+    out, i = "", 0
+    while i < len(glob):
+        c = glob[i]
+        if glob[i:i+2] == "**":
+            out += ".*"; i += 2
+            if i < len(glob) and glob[i] == "/": i += 1  # **/ swallows the slash
+        elif c == "*":
+            out += "[^/]*"; i += 1
+        elif c == "?":
+            out += "[^/]"; i += 1
+        else:
+            out += re.escape(c); i += 1
+    return re.compile("^" + out + "$")
+def match_any(path, globs):
+    return any(to_re(g).match(path) for g in globs)
+bad = []
+for raw in staged:
+    p = raw.strip().replace("\\", "/")
+    if not p: continue
+    if match_any(p, always): continue
+    if match_any(p, forbidden):
+        bad.append(p + "  (matches forbidden_globs)"); continue
+    if allowed and not match_any(p, allowed):
+        bad.append(p + "  (outside allowed_globs)")
+sys.stdout.write("\n".join(bad))
+PY
+)"
+
+if [ -n "$violation" ]; then
+  echo "!!! GRIND SCOPE-GUARD: commit blocked — out-of-focus paths !!!" >&2
+  echo "Active focus: $(grind_state_get focus.label)" >&2
+  echo "$violation" | sed 's/^/  - /' >&2
+  echo "Fix: only touch paths inside the focus globs, or log a gate + move on (do NOT widen focus mid-window)." >&2
+  grind_audit "scope_guard" "BLOCKED commit; offending=$(printf '%s' "$violation" | tr '\n' ';')"
+  exit 1
+fi
+exit 0

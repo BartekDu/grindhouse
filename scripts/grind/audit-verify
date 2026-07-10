@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# audit-verify — recompute the hash-chain over .claude/grind/audit.log and report
+# the first broken link, if any. The loop appends hash-chained lines via
+# grind_audit (lib.sh); if any past line is edited/deleted/reordered, every
+# subsequent hash stops matching — so the loop (the same model) cannot silently
+# rewrite its own history. Run this to trust the audit trail.
+#
+# Usage: audit-verify         exit 0 if intact; exit 1 + first bad line if broken.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 1
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+
+[ -s "$GRIND_AUDIT" ] || { echo "audit-verify: empty/absent audit log — OK (nothing to verify)"; exit 0; }
+
+"$GRIND_PYTHON" - "$GRIND_AUDIT" <<'PY'
+import sys, json, hashlib
+path = sys.argv[1]
+prev = "GENESIS"
+n = 0
+with open(path, encoding="utf-8") as f:
+    for ln, raw in enumerate(f, 1):
+        raw = raw.strip()
+        if not raw: continue
+        n += 1
+        try:
+            o = json.loads(raw)
+        except Exception as e:
+            print(f"audit-verify: BROKEN at line {ln}: not valid JSON ({e})"); sys.exit(1)
+        if o.get("prev") != prev:
+            print(f"audit-verify: BROKEN at line {ln}: prev mismatch (expected {prev[:12]}..., got {str(o.get('prev'))[:12]}...)"); sys.exit(1)
+        payload = f"{o.get('prev','')}{o.get('ts','')}{o.get('event','')}{o.get('data','')}"
+        h = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        if h != o.get("hash"):
+            print(f"audit-verify: BROKEN at line {ln}: hash mismatch (line was tampered or fields changed)"); sys.exit(1)
+        prev = o["hash"]
+print(f"audit-verify: OK — {n} entries, chain intact (head {prev[:12]}...)")
+PY

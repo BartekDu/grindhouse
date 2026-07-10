@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# landable-guard — pre-push hook. Two protections:
+#   1. A deferred human-gate makes the branch NON-LANDABLE: if gate-ledger.md has
+#      any OPEN blocking gate (an unchecked "- [ ]" line tagged needs:/qa or
+#      needs:/cso or BLOCKS), the push is refused. /grind may keep doing other
+#      in-focus work, but it can never push/ship a branch with unverified gates.
+#   2. Never push directly to dev/main (CLAUDE.md §11). Overridable for a genuine
+#      human emergency with GRIND_ALLOW_PUSH=1 (prints why).
+#
+# Reads refs from stdin (git pre-push protocol: "<local_ref> <local_sha> <remote_ref> <remote_sha>").
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 0
+. "$HERE/config.sh"; . "$HERE/lib.sh" 2>/dev/null || true
+
+fail=0
+
+# 1. open-gate block (only if a gate-ledger exists with unchecked blocking lines)
+#    !!! FENCE-SKIP TRAP !!! The ledger documents its own row FORMAT inside a
+#    ```text fence (e.g. "- [ ] G-01 | needs:/cso | ... <branch>"). A naive grep
+#    matches that example and false-blocks EVERY push (the ledger ships on dev).
+#    Strip fenced lines first so only REAL gate rows count. See PROGRESS.md
+#    2026-05-30 landable-guard-fence fix.
+if [ -f "$GRIND_GATELEDGER" ]; then
+  open_gates="$(awk '/^[[:space:]]*```/{f=!f; next} !f' "$GRIND_GATELEDGER" 2>/dev/null \
+    | grep -E '^- \[ \].*(needs:/?(qa|cso)|BLOCKS|non-landable)' 2>/dev/null || true)"
+  if [ -n "$open_gates" ]; then
+    echo "!!! GRIND LANDABLE-GUARD: push blocked — open human-gates (branch is non-landable) !!!" >&2
+    echo "$open_gates" | sed 's/^/  /' >&2
+    echo "Clear them: run the gate (e.g. /cso, /qa) with the founder, then check the box in $GRIND_GATELEDGER." >&2
+    fail=1
+  fi
+fi
+
+# 2. no direct push to dev/main
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/dev|refs/heads/main)
+      if [ "${GRIND_ALLOW_PUSH:-0}" = "1" ]; then
+        echo "landable-guard: GRIND_ALLOW_PUSH=1 set — allowing push to ${remote_ref} (CLAUDE.md §11 says PRs only; you are overriding)." >&2
+      else
+        echo "!!! GRIND LANDABLE-GUARD: refusing direct push to ${remote_ref} — open a PR (CLAUDE.md §11). Override: GRIND_ALLOW_PUSH=1 !!!" >&2
+        fail=1
+      fi
+      ;;
+  esac
+done
+
+[ "$fail" = "0" ] || { command -v grind_audit >/dev/null 2>&1 && grind_audit "landable_guard" "BLOCKED push"; exit 1; }
+exit 0
