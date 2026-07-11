@@ -1,11 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Append one quota-usage row to a GLOBAL cross-project CSV log.
 
 Runs the /usage TUI reader (claude_usage.py --json), parses the result, and
-appends a single timestamped row to C:\\Users\\b\\.claude\\quota_log.csv.
+appends a single timestamped row to ~/.claude/quota_log.csv (expanduser).
 
-Intended to be fired every 30 min by a Windows Scheduled Task, INDEPENDENT of
-any Claude Code project/session (so the log is global, not per-project).
+Intended to be fired every 30 min by a background scheduler, INDEPENDENT of
+any Claude Code project/session (so the log is global, not per-project):
+  - Linux:   systemd user timer (units in ./systemd/, see SKILL.md)
+  - Windows: Scheduled Task "ClaudeQuotaLog"
 
 Columns:
     warsaw_time          - "Sat 2026-05-30 14:07 CEST" (timestamp, Warsaw tz)
@@ -13,12 +15,14 @@ Columns:
     week_pct_left        - int % of the weekly window remaining (or "")
     five_hour_resets     - reset-time string from the /usage panel
     week_resets          - reset-time string from the /usage panel
-    quota_tight          - True/False (5h<=20% or week<=10% left)
+    quota_tight          - True/False (5h<=20% or either weekly<=10% left)
     status               - "ok" or "error: <reason>"
+    week_model           - per-model weekly bar's model name ("fable", ...)
+    week_model_pct_left  - int % of the per-model weekly window remaining
 
 Run:
-    python log_quota.py            # appends one row
-    python log_quota.py --print    # also echo the row to stdout
+    python3 log_quota.py            # appends one row
+    python3 log_quota.py --print    # also echo the row to stdout
 """
 
 from __future__ import annotations
@@ -64,7 +68,7 @@ def warsaw_now_str() -> str:
 def read_usage() -> dict:
     """Run claude_usage.py --json and return the parsed dict (raises on failure)."""
     # capture BYTES, not text: the child reconfigures its stdout to UTF-8, but
-    # subprocess text=True would decode with the Windows locale (cp1252) and
+    # on Windows subprocess text=True would decode with the locale (cp1252) and
     # choke on the box-drawing / euro bytes. Decode UTF-8 ourselves.
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     proc = subprocess.run(

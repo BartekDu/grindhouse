@@ -1,0 +1,10 @@
+[Unit]
+Description=Log Claude quota every 30 min (global CSV, per-user)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

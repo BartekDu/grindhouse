@@ -6,14 +6,16 @@ from gstack (which is reproduced by cloning, not backed up here).
 
 ## /quota (custom)
 - `SKILL.md` + `claude_usage.py` (this dir). `claude_usage.py` reads the `/usage` TUI panel
-  via a ConPTY (no headless `/usage`).
-- **Runtime deps:** `pip install pywinpty pyte` (Windows). Stdlib otherwise.
-- **Path note (!!! QUOTA TOOL PATH TRAP !!!):** `SKILL.md` invokes the LIVE copy at
-  `C:/Users/b/Desktop/CF_domains/claude_usage.py`. Moving/renaming it is a FOUR-place change:
-  (1) that live copy, (2) the backup in THIS dir (keep byte-identical), (3) grind's
-  `scripts/grind/config.sh` `GRIND_QUOTA_TOOL` hardcode (wrong path fails the gate CLOSED —
-  POLL_FAILED, no grind can start), (4) the `ClaudeQuotaLog` Windows Scheduled Task (30-min
-  background logger). Full write-up: SKILL.md "Path coupling".
+  via a pseudo-terminal (no headless `/usage`). Dual backend: stdlib `pty` on Linux/macOS,
+  pywinpty/ConPTY on Windows.
+- **Runtime deps:** `pip install pyte` (all platforms) + `pip install pywinpty` (Windows only).
+- **Background logger (optional):** Linux = systemd user timer, units in `./systemd/`
+  (`claude-quota-log.{service,timer}`); Windows = `ClaudeQuotaLog` scheduled task.
+- **Path note:** the old 4-place coupling is dead — THIS dir's copy is what `install.sh`
+  ships to `~/.claude/skills/quota/`, grind's `config.sh` auto-resolves `GRIND_QUOTA_TOOL`
+  (repo-vendored `.claude/skills/quota/` copy wins, else the installed skill; env override
+  for anything else), and both background loggers invoke the installed copy. A wrong
+  override still fails the gate CLOSED (POLL_FAILED, no grind can start).
 
 ## /grind (custom) — canonical home: the grindhouse repo (since 2026-07-10)
 - Source of truth: `F:\code\grindhouse` (github.com/BartekDu/grindhouse, private) —

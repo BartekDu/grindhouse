@@ -51,9 +51,12 @@ Claude auth — quota-gate runs against a faked cache).
   `cp -f scripts/grind/* <repo>/scripts/grind/`, but NEVER copy
   `grind-bootstrap.sh` into a product repo (it is the global entrypoint that
   RESOLVES repo-local vs global; inside a repo it has no meaning).
-- **Live quota tool:** `C:/Users/b/Desktop/CF_domains/claude_usage.py` is what
-  callers execute (4-place path coupling — see `skills/quota/DEPENDENCIES.md`);
-  `skills/quota/claude_usage.py` is the tracked byte-identical backup.
+- **Quota tool:** `skills/quota/claude_usage.py` IS the executed tool —
+  `install.sh` ships it to `~/.claude/skills/quota/`, grind's `config.sh`
+  auto-resolves `GRIND_QUOTA_TOOL` (repo-vendored copy wins, else the installed
+  skill; env/project.conf override), and the background loggers (Linux systemd
+  timer in `skills/quota/systemd/`, Windows `ClaudeQuotaLog` task) invoke the
+  installed copy. The old 4-place desktop-path coupling is dead.
 
 ## Constitution (from /culture — applies to this repo too)
 

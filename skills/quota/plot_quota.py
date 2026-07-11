@@ -1,13 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """View quota_log.csv in the terminal: codeburn-style block-bar chart or table.
 
 Backs the /quota subcommands:
-    /quota plot       -> python plot_quota.py            # two stacked block-bar panels (all)
-                         python plot_quota.py 48          #   last 48 samples
-    /quota plot bars  -> python plot_quota.py bars        # horizontal bars, latest-glance
-                         python plot_quota.py bars 16     #   last 16 rows
-    /quota log        -> python plot_quota.py rows        # table, last 20 rows
-                         python plot_quota.py rows 40
+    /quota plot       -> python3 plot_quota.py            # two stacked block-bar panels (all)
+                         python3 plot_quota.py 48          #   last 48 samples
+    /quota plot bars  -> python3 plot_quota.py bars        # horizontal bars, latest-glance
+                         python3 plot_quota.py bars 16     #   last 16 rows
+    /quota log        -> python3 plot_quota.py rows        # table, last 20 rows
+                         python3 plot_quota.py rows 40
 
 Auto-refresh: every invocation first appends a FRESH sample to the CSV (via
 log_quota.py -> nested /usage read, ~13s) unless the newest logged sample is
