@@ -19,27 +19,49 @@ GRIND_MAX_WINDOWS=8             # auto-chain cap: founder-authorized 2026-06-03 
 GRIND_MAX_CONCURRENT=4         # fan-out cap: parallel feature-builders per window (disjoint scope each)
 GRIND_POLL_MIN_INTERVAL_SEC=600 # rate-limit /quota polls; reuse cached reading within this window
 
+# --- main-root anchor (define BEFORE the overrides + paths that use it) ---
+# A campaign has ONE state tree, at the MAIN worktree root. Builders run in
+# linked worktrees (.claude/worktrees/grind-feat-*), where `rev-parse
+# --show-toplevel` points at the worktree — anchoring state there gave every
+# builder an EMPTY state and silently DISARMED the guards (incident: an
+# out-of-focus `wip` commit passed clean inside a builder worktree; the
+# worktree law forces builders INTO worktrees, so the law must reach them
+# there). dirname(--git-common-dir) is the main worktree root from anywhere;
+# the common dir may print relative (".git") in the main root, so resolve
+# via cd.
+grind_main_root() {
+  local common
+  common="$(git rev-parse --git-common-dir 2>/dev/null)" || { pwd; return; }
+  case "$common" in
+    /*) dirname "$common" ;;
+    *)  ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || pwd ;;
+  esac
+}
+GRIND_MAIN_ROOT="$(grind_main_root)"
+
 # --- per-repo project overrides (optional) ---
 # The bundle is project-AGNOSTIC: anything project-specific comes from an
 # optional shell-var file  <repo>/.claude/grind/project.conf  sourced here.
+# Read from the MAIN root: project.conf is typically untracked, so it does not
+# exist inside a linked worktree's toplevel.
 # (Incident: value-gate/hygiene/landable hardcoded one product's backlog ids,
 # scratch dirs and branch names — the bundle rejected every other repo's work.)
 # Recognized vars (all optional; sensible defaults / auto-detection otherwise):
 #   GRIND_BASE_BRANCH="main"            # campaign branches cut from + PR'd to this
 #                                       # (default: origin/HEAD, else dev|main|master)
 #   GRIND_PROTECTED_BRANCHES="main dev" # landable-guard refuses direct pushes to these
+#                                       # (enforced only while a grind window is active)
 #   GRIND_EXTRA_IGNORES="db.sqlite3 out/cache/"   # extra hygiene-check .gitignore entries
 #   GRIND_VALUE_EXTRA_RE='PROJ-[0-9]+'  # extra value-gate objective-win id regex
 # Verification gates live in <repo>/.claude/grind/verify-cmds (see verify-run).
 # Example conf for the Underline repo: docs/examples/underline.project.conf.
-_grind_toplevel="$(git rev-parse --show-toplevel 2>/dev/null)"
-if [ -n "$_grind_toplevel" ] && [ -f "$_grind_toplevel/.claude/grind/project.conf" ]; then
-  . "$_grind_toplevel/.claude/grind/project.conf"
+if [ -f "$GRIND_MAIN_ROOT/.claude/grind/project.conf" ]; then
+  . "$GRIND_MAIN_ROOT/.claude/grind/project.conf"
 fi
 GRIND_PROTECTED_BRANCHES="${GRIND_PROTECTED_BRANCHES-dev main master}"   # set EMPTY in project.conf to disable the push block
 
-# --- paths (relative to repo root) ---
-GRIND_DIR=".claude/grind"
+# --- paths (anchored at the MAIN worktree root via GRIND_MAIN_ROOT, above) ---
+GRIND_DIR="$GRIND_MAIN_ROOT/.claude/grind"
 GRIND_STATE="${GRIND_DIR}/state.json"
 GRIND_RUNLOG="${GRIND_DIR}/run-log.md"
 GRIND_GATELEDGER="${GRIND_DIR}/gate-ledger.md"
