@@ -6,9 +6,11 @@
 # never interferes with the founder's normal commits. When active it reads the
 # focus contract from state.json and fails the commit on out-of-focus paths.
 #
-# Always-allowed regardless of focus: grind's own bookkeeping (.claude/grind/**)
-# and the grind harness itself (scripts/grind/**) — the loop must be able to
-# commit its state/logs.
+# Always-allowed regardless of focus: grind's own bookkeeping (.claude/grind/**),
+# the grind harness itself (scripts/grind/**), and .gitignore — the loop must be
+# able to commit its state/logs, and hygiene-check edits .gitignore MID-window
+# (loop step "ignore scratch noise"), which would otherwise be unfixably
+# out-of-focus while .active is present.
 set -o pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 0
@@ -50,7 +52,7 @@ import sys, re
 allowed = [g for g in sys.argv[1].splitlines() if g.strip()]
 forbidden = [g for g in sys.argv[2].splitlines() if g.strip()]
 staged = sys.argv[3].splitlines()
-always = ["scripts/grind/**", ".claude/grind/**"]
+always = ["scripts/grind/**", ".claude/grind/**", ".gitignore"]
 def to_re(glob):
     out, i = "", 0
     while i < len(glob):

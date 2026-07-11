@@ -2,7 +2,7 @@
 # hygiene-check — gitignore + untracked-noise hygiene for /grind windows.
 #
 # WHY: a prior autonomous run left 455 untracked files (scratch worktrees +
-# db.sqlite3) staring at the founder, and accumulated 124 unrelated files on one
+# db.sqlite3) staring at the user, and accumulated 124 unrelated files on one
 # trunk branch. This guard makes the loop keep `git status` boringly clean:
 #   1. `verify`  — report whether required .gitignore entries exist + whether the
 #                  tree has unexpected untracked files. Exit 0 = clean, 3 = needs
@@ -13,19 +13,12 @@
 #
 # Required entries = scratch noise that must NEVER be tracked or shown as dirty:
 #   .claude/worktrees/        (grind/dev worktree scratch dirs)
-#   db.sqlite3                (local sqlite dev db)
 #   *.tmp                     (grind atomic-write temps + generic scratch)
-#   graphify-out/cache/       (graphify regenerable extraction cache)
-#   graphify-out/cost.json    (graphify local token-spend tracker)
-#   graphify-out/.graphify_*  (graphify per-machine sidecars: abs python path, run labels)
-#
-# WHY graphify entries are here (self-heal): they were repeatedly lost because an
-# appended .gitignore edit was left UNCOMMITTED while a concurrent autonomous
-# session rebased the shared working tree (rebase/checkout discards uncommitted
-# changes — it was never a linter). Owning them here means every grind/semi-grind
-# window re-asserts them if anything drops them, so no human "glance at .gitignore"
-# is ever required. The committed-on-dev block (PR #73) is the primary guarantee;
-# this is the backstop.
+# Project-specific noise (dev databases, regenerable caches, tool sidecars) goes
+# into GRIND_EXTRA_IGNORES in <repo>/.claude/grind/project.conf — whitespace-
+# separated entries, re-asserted by every window (self-heal: an appended-but-
+# uncommitted .gitignore edit can be lost to a concurrent rebase/checkout;
+# owning the list here means no human "glance at .gitignore" is ever required).
 #
 # Untracked-noise check: after the required ignores are in place, any remaining
 # `git status --porcelain` "??" entry is UNEXPECTED — the loop must either track
@@ -38,15 +31,27 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exi
 GITIGNORE="$ROOT/.gitignore"
 
 # Entries the loop guarantees are present. One per line; exact-match against
-# trimmed .gitignore lines so we never duplicate an existing rule.
+# trimmed .gitignore lines so we never duplicate an existing rule. Project-
+# specific additions come from GRIND_EXTRA_IGNORES (project.conf), whitespace-
+# separated — e.g.  GRIND_EXTRA_IGNORES="db.sqlite3 out/cache/ .tool_*"
 REQUIRED_IGNORES=(
   ".claude/worktrees/"
-  "db.sqlite3"
   "*.tmp"
-  "graphify-out/cache/"
-  "graphify-out/cost.json"
-  "graphify-out/.graphify_*"
+  # grind's VOLATILE runtime state — appended/rewritten by every gate call, so
+  # tracking it keeps the tree permanently dirty (audit.log grows on each audit).
+  # The human-facing ledgers (run-log.md, gate-ledger.md, state.json) stay
+  # committable — a repo may track those for PR visibility.
+  ".claude/grind/.active"
+  ".claude/grind/.lock/"
+  ".claude/grind/.quota-cache.json"
+  ".claude/grind/audit.log"
+  ".claude/grind/cost-history.jsonl"
 )
+if [ -n "${GRIND_EXTRA_IGNORES:-}" ]; then
+  for _extra in ${GRIND_EXTRA_IGNORES}; do
+    REQUIRED_IGNORES+=("$_extra")
+  done
+fi
 
 # Print required entries that are NOT already present (exact trimmed match).
 missing_ignores() {
@@ -94,7 +99,9 @@ case "${1:-verify}" in
     fi
     # Unexpected untracked files (after ignores are honored). grind's own
     # bookkeeping under .claude/grind/ is expected and excluded from the count.
-    untracked="$(git status --porcelain 2>/dev/null | grep '^??' | sed 's/^?? //' | grep -v '^\.claude/grind/')"
+    # -uall: porcelain otherwise collapses untracked dirs (`?? .claude/`), which
+    # defeats the per-path exclusion below.
+    untracked="$(git status --porcelain -uall 2>/dev/null | grep '^??' | sed 's/^?? //' | grep -v '^\.claude/grind/')"
     if [ -n "$untracked" ]; then
       echo "!!! GRIND HYGIENE: unexpected untracked files (track them or ignore them — do not leave noise):" >&2
       printf '%s\n' "$untracked" | sed 's/^/  - /' >&2

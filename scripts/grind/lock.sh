@@ -34,8 +34,12 @@ case "${1:-}" in
       echo "lock.sh: reclaiming stale lock (pid=$lpid age=${age}s)" >&2
       rm -rf "$GRIND_LOCK"
     fi
-    # dirty-tree preflight: refuse to start a window on a dirty / mid-merge tree
-    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    # dirty-tree preflight: refuse to start a window on a dirty / mid-merge tree.
+    # grind's OWN untracked bookkeeping (.claude/grind/**, e.g. audit.log written
+    # by bootstrap before the first commit) is exempt — same exclusion as
+    # hygiene-check; anything tracked-but-modified still refuses. -uall so
+    # porcelain can't collapse it into an unexcludable `?? .claude/`.
+    if [ -n "$(git status --porcelain -uall 2>/dev/null | grep -v '^?? \.claude/grind/')" ]; then
       echo "!!! GRIND LOCK: working tree not clean — refusing to start a window. Commit/stash/resolve first." >&2
       grind_audit "lock" "acquire DENIED (dirty tree)"
       exit 2

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # landable-guard — pre-push hook. Two protections:
 #   1. A deferred human-gate makes the branch NON-LANDABLE: if gate-ledger.md has
-#      any OPEN blocking gate (an unchecked "- [ ]" line tagged needs:/qa or
-#      needs:/cso or BLOCKS), the push is refused. /grind may keep doing other
+#      any OPEN blocking gate (an unchecked "- [ ]" line tagged needs:<anything>,
+#      BLOCKS, or non-landable), the push is refused. /grind may keep doing other
 #      in-focus work, but it can never push/ship a branch with unverified gates.
-#   2. Never push directly to dev/main (CLAUDE.md §11). Overridable for a genuine
-#      human emergency with GRIND_ALLOW_PUSH=1 (prints why).
+#      (Incident: the regex once matched only needs:/qa|/cso — semi-grind's
+#      `needs:decision` gates pushed straight through the guard.)
+#   2. Never push directly to a protected branch (GRIND_PROTECTED_BRANCHES from
+#      config.sh / project.conf; default "dev main master"). Overridable for a
+#      genuine human emergency with GRIND_ALLOW_PUSH=1 (prints why).
 #
 # Reads refs from stdin (git pre-push protocol: "<local_ref> <local_sha> <remote_ref> <remote_sha>").
 set -o pipefail
@@ -23,27 +26,27 @@ fail=0
 #    2026-05-30 landable-guard-fence fix.
 if [ -f "$GRIND_GATELEDGER" ]; then
   open_gates="$(awk '/^[[:space:]]*```/{f=!f; next} !f' "$GRIND_GATELEDGER" 2>/dev/null \
-    | grep -E '^- \[ \].*(needs:/?(qa|cso)|BLOCKS|non-landable)' 2>/dev/null || true)"
+    | grep -E '^- \[ \].*(needs:|BLOCKS|non-landable)' 2>/dev/null || true)"
   if [ -n "$open_gates" ]; then
     echo "!!! GRIND LANDABLE-GUARD: push blocked — open human-gates (branch is non-landable) !!!" >&2
     echo "$open_gates" | sed 's/^/  /' >&2
-    echo "Clear them: run the gate (e.g. /cso, /qa) with the founder, then check the box in $GRIND_GATELEDGER." >&2
+    echo "Clear them: run the gate (the named check) with the founder, then check the box in $GRIND_GATELEDGER." >&2
     fail=1
   fi
 fi
 
-# 2. no direct push to dev/main
+# 2. no direct push to a protected branch (default: dev main master)
 while read -r local_ref local_sha remote_ref remote_sha; do
-  case "$remote_ref" in
-    refs/heads/dev|refs/heads/main)
+  for prot in ${GRIND_PROTECTED_BRANCHES-dev main master}; do
+    if [ "$remote_ref" = "refs/heads/$prot" ]; then
       if [ "${GRIND_ALLOW_PUSH:-0}" = "1" ]; then
-        echo "landable-guard: GRIND_ALLOW_PUSH=1 set — allowing push to ${remote_ref} (CLAUDE.md §11 says PRs only; you are overriding)." >&2
+        echo "landable-guard: GRIND_ALLOW_PUSH=1 set — allowing push to ${remote_ref} (policy says PRs only; you are overriding)." >&2
       else
-        echo "!!! GRIND LANDABLE-GUARD: refusing direct push to ${remote_ref} — open a PR (CLAUDE.md §11). Override: GRIND_ALLOW_PUSH=1 !!!" >&2
+        echo "!!! GRIND LANDABLE-GUARD: refusing direct push to ${remote_ref} — open a PR instead. Override: GRIND_ALLOW_PUSH=1 !!!" >&2
         fail=1
       fi
-      ;;
-  esac
+    fi
+  done
 done
 
 [ "$fail" = "0" ] || { command -v grind_audit >/dev/null 2>&1 && grind_audit "landable_guard" "BLOCKED push"; exit 1; }
