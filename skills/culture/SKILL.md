@@ -59,7 +59,7 @@ allowed-tools:
 | Savepoint contract | `references/savepoints.md` | commit ≤10 min; pause and power cuts become cheap |
 | Swarm etiquette | `references/swarm-etiquette.md` | gh-issue ownership board; foreign claims = your forbidden_globs |
 | Triple-write trap rule | `references/triple-write.md` | traps land in commit body + adjacent .md + `!!! TRAP !!!` comment |
-| GH-issue collaboration | `references/gh-collab.md` | human↔swarm bridge: `grind-ok` = TODO intake, `human-gate` = mirrored gates, `PAUSE` comment = soft-pause; web UI is enough — no VS Code/shell |
+| GH-issue collaboration | `references/gh-collab.md` | human↔swarm bridge: `grind-ok` = TODO intake, `bug`→`fix-accepted` = tester QA loop, `human-gate` = mirrored gates, `needs-human-review` = suspected invalid/conflicting issue escalation, `PAUSE` comment = soft-pause; web UI is enough — no VS Code/shell |
 
 **Deliberately NOT in the framework** (documented as opt-in, with why):
 per-PR mandatory codex (heavy for a solo founder — codex is mandatory only at
@@ -108,7 +108,9 @@ That gives raw `codex exec` / `codex review`. For the `/codex review|challenge|c
    rest. Never seed everything silently; adoption is a choice.
 3. For each adopted pattern, append its template section to CLAUDE.md (from the
    reference file) WITH the origin story, and create the on-disk skeletons
-   (e.g. an empty register dir with the header row, a RULEBOOK stub).
+   (e.g. an empty register dir with the header row, a RULEBOOK stub). If GH-issue
+   collaboration is adopted: also run the label bootstrap block and install
+   `.github/ISSUE_TEMPLATE/bug_report.md` from `references/gh-collab.md`.
 4. End the new CLAUDE.md sections with their own `### Rules for agents`
    Never-blocks (the pattern applies to itself).
 5. Report what was seeded + what was offered and declined (a register row).

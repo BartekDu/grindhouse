@@ -182,7 +182,7 @@ Repeat until a STOP:
      rate-limits + caches; trust it.
 2. **Pick next work** by ladder (first non-empty tier, ALL filtered to the focus globs):
    - **(a)** explicit `state.json` tasks whose `depends_on` are met;
-   - **(b)** approved backlog — `TODOS.md` items + finishing open PRs + open GH issues labeled `grind-ok` (human-filed TODOs; `gh issue list --label grind-ok`, skip silently without gh/remote) — ALL **inside focus**;
+   - **(b)** approved backlog — `TODOS.md` items + finishing open PRs + open GH issues labeled `grind-ok` or `fix-accepted` (human-filed TODOs / triaged bugs; `gh issue list --label <label>`, skip silently without gh/remote) — ALL **inside focus**. A bug that fails the validity check (no repro on the reporter's steps / non-existent behavior / conflicts with another issue or RULE-NNN) is NEVER silently fixed or closed — escalate per gh-collab: label `needs-human-review` + one structured comment, then move on;
    - **(c)** always-safe tech-debt inside focus — add tests / raise coverage, build the `!!! TRAP !!!` → TRAPS.md index, observability backfill, lint/type hardening;
    - **(d)** → Floor activity.
      For (b)/(c), first pass the value gate: `bash $G/value-gate "<justification naming an objective win>"` (a closed backlog id, a coverage increase, or a lint/type-error decrease). REJECT → skip the task + log it; do not do unjustifiable busywork.
