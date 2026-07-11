@@ -251,6 +251,60 @@ b="$(bash -c ". '$G/config.sh'; . '$G/lib.sh'; grind_base_branch")"
 b="$(GRIND_BASE_BRANCH=release bash -c ". '$G/config.sh'; . '$G/lib.sh'; grind_base_branch")"
 [ "$b" = "release" ] && ok "base branch: env/project.conf override" || bad "base branch override: got '$b'"
 
+# ---------- 13. quota tool resolution + per-OS pythons ----------
+tool="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
+case "$tool" in
+  */.claude/skills/quota/claude_usage.py) ok "quota tool: resolves to a skill path (no machine hardcode)";;
+  *) bad "quota tool: unexpected default '$tool'";;
+esac
+mkdir -p .claude/skills/quota && : > .claude/skills/quota/claude_usage.py
+tool="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
+[ "$tool" = "$TMP/r1/.claude/skills/quota/claude_usage.py" ] \
+  && ok "quota tool: repo-vendored copy wins" || bad "quota tool: vendored copy ignored ($tool)"
+rm -rf .claude/skills
+tool="$(GRIND_QUOTA_TOOL=/custom/path.py bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
+[ "$tool" = "/custom/path.py" ] && ok "quota tool: env override honored" || bad "quota tool: env override ignored"
+py="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_PYTHON\"")"
+command -v "$py" >/dev/null 2>&1 && ok "GRIND_PYTHON resolves to a real interpreter ($py)" || bad "GRIND_PYTHON '$py' not on PATH"
+
+# ---------- 14. /usage parser: per-model weekly bar (no pyte, no session) ----------
+CU=""
+for c in "$SRC/../../skills/quota/claude_usage.py" "$SRC/../../../quota/claude_usage.py"; do
+  [ -f "$c" ] && CU="$c" && break
+done
+if [ -n "$CU" ]; then
+  if "$PYBIN" - "$CU" <<'PY' >/dev/null 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cu", sys.argv[1])
+cu = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cu)   # must import WITHOUT pyte (lazy backend import)
+lines = [
+    "Current session (5-hour limit)",
+    "|||||| 37% used",
+    "Resets 6pm (Europe/Warsaw)",
+    "",
+    "Current week (all models)",
+    "|| 12% used",
+    "Resets Jul 13, 6pm (Europe/Warsaw)",
+    "",
+    "Current week (Fable)",
+    "|||| 44% used",
+    "Resets Jul 13, 6pm (Europe/Warsaw)",
+]
+s = cu.parse(lines)
+assert s["five_hour"]["pct_used"] == 37, s
+assert s["five_hour"]["resets"] == "6pm", s
+assert s["week_all"]["pct_used"] == 12, s
+assert s["week_fable"]["pct_used"] == 44, s
+assert s["week_fable"]["resets"] == "Jul 13, 6pm", s
+PY
+  then ok "usage parser: 5h + all-models + per-model (Fable) bars parsed"
+  else bad "usage parser: synthetic panel failed to parse"
+  fi
+else
+  echo "  skip- usage parser (claude_usage.py not found next to the law)"
+fi
+
 bash "$G/lock.sh" release >/dev/null 2>&1
 
 echo "== selftest: $PASS passed, $FAIL failed"
