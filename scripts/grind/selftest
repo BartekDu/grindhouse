@@ -67,6 +67,30 @@ rc=$?
 { [ "$rc" != "0" ] && [ "${GRIND_BOOTSTRAP_STATUS#HOOK_CONFLICT}" != "$GRIND_BOOTSTRAP_STATUS" ]; } \
   && ok "foreign hook -> HOOK_CONFLICT rc=$rc" || bad "foreign hook: rc=$rc status=$GRIND_BOOTSTRAP_STATUS"
 grep -q 'echo mine' .git/hooks/pre-commit && ok "foreign hook NOT clobbered" || bad "foreign hook clobbered"
+# all-or-nothing: the conflict must abort the WHOLE install, not arm the other two
+{ [ ! -e .git/hooks/pre-push ] && [ ! -e .git/hooks/commit-msg ]; } \
+  && ok "conflict installs NOTHING (all-or-nothing)" || bad "conflict left a partial install"
+
+# ---------- 2b. bootstrap: legacy v1 hook upgraded in place ----------
+new_repo "$TMP/r2b"
+printf '#!/usr/bin/env bash\n# !!! GRIND HOOK !!!  (installed by grind-bootstrap.sh; safe to delete to disarm)\nexec bash "/old/absolute/path/scope-guard" "$@"\n' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+source scripts/grind/grind-bootstrap.sh >/dev/null 2>&1
+[ "$GRIND_BOOTSTRAP_STATUS" = "OK" ] && grep -q 'GRIND HOOK v2' .git/hooks/pre-commit \
+  && ok "legacy v1 hook upgraded to v2 in place" || bad "v1->v2 upgrade failed (status=$GRIND_BOOTSTRAP_STATUS)"
+
+# ---------- 2c. hook wrapper: missing bundle -> fail-open, fail-closed in window ----------
+mkdir -p "$TMP/r2c" && cd "$TMP/r2c"
+git init -q -b main 2>/dev/null || { git init -q && git checkout -qb main; }
+git config user.email selftest@grindhouse && git config user.name selftest
+echo x > f && git add f && git commit -qm "init: seed"
+source "$SRC/grind-bootstrap.sh" >/dev/null 2>&1   # global-bundle path; repo has NO vendored copy
+HOME=/nonexistent-home bash .git/hooks/commit-msg /dev/null >/dev/null 2>&1
+[ $? = 0 ] && ok "missing bundle outside a window: fail-open (warn+skip)" || bad "missing bundle outside a window blocked the commit"
+mkdir -p .claude/grind && touch .claude/grind/.active
+HOME=/nonexistent-home bash .git/hooks/commit-msg /dev/null >/dev/null 2>&1
+[ $? = 1 ] && ok "missing bundle in an ACTIVE window: fail-closed" || bad "missing bundle in a window did NOT fail closed"
+rm -rf .claude/grind
 
 # ---------- 3. hygiene + lock (r1 from here on) ----------
 cd "$TMP/r1"; G="$TMP/r1/scripts/grind"
@@ -77,6 +101,9 @@ expect_rc "hygiene verify clean after fix+commit" 0 bash "$G/hygiene-check" veri
 # grind's own untracked bookkeeping must not block acquire
 mkdir -p .claude/grind && echo '{}' > .claude/grind/state.json
 expect_rc "lock acquire (grind bookkeeping untracked is exempt)" 0 bash "$G/lock.sh" acquire w1
+# the holder pid is a one-shot process; the single-run contract is age+release,
+# so a second acquire while the lock is FRESH must refuse (no pid-based steal)
+expect_rc "second acquire refused while held" 1 bash "$G/lock.sh" acquire w2
 
 # focus contract for the guard tests
 GJ set .claude/grind/state.json focus '{"label":"api","allowed_globs":["src/api/**"],"forbidden_globs":["infra/**"]}'
@@ -114,6 +141,35 @@ echo w >> src/api/a.txt && git add src/api/a.txt
 git commit -qm "api: from shared checkout" >/dev/null 2>&1 && bad "worktree law: shared-checkout commit NOT blocked" || ok "worktree law: builder branch outside worktree blocked"
 git reset -q && git checkout -q . && git checkout -q main
 
+# ---------- 5b. worktree ENFORCEMENT (state anchored at the main root) ----------
+# The other half of the worktree law: once builders ARE in worktrees, the focus
+# contract must still reach them (state.json/.active live at the main root).
+git worktree add -q .claude/worktrees/grind-feat-wt grind/feat/wt-law
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  echo sneak >> infra/i.txt && git add infra/i.txt
+  git commit -qm "infra: sneak from worktree" >/dev/null 2>&1
+) && bad "worktree: forbidden path NOT blocked inside a worktree" || ok "worktree: forbidden path blocked inside a worktree"
+( cd .claude/worktrees/grind-feat-wt && git reset -q && git checkout -q infra/i.txt )
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  echo m >> src/api/a.txt && git add src/api/a.txt
+  git commit -qm "wip" >/dev/null 2>&1
+) && bad "worktree: opaque message NOT blocked inside a worktree" || ok "worktree: opaque message blocked inside a worktree"
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  git commit -qm "api: real work from worktree" >/dev/null 2>&1
+) && ok "worktree: in-focus conventional commit passes" || bad "worktree: in-focus commit blocked"
+# semi-grind contract: RULEBOOK.md + register dir in allowed_globs -> consolidator can commit
+GJ set .claude/grind/state.json focus '{"label":"api+campaign","allowed_globs":["src/api/**","RULEBOOK.md","docs/consistency-x/**"],"forbidden_globs":["infra/**"]}'
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  echo rules > RULEBOOK.md && git add RULEBOOK.md
+  git commit -qm "docs: ratify RULE-001" >/dev/null 2>&1
+) && ok "worktree: RULEBOOK.md passes with the semi-grind Step-0 contract" || bad "worktree: RULEBOOK.md blocked despite contract"
+GJ set .claude/grind/state.json focus '{"label":"api","allowed_globs":["src/api/**"],"forbidden_globs":["infra/**"]}'
+git worktree remove --force .claude/worktrees/grind-feat-wt 2>/dev/null
+
 # ---------- 6. commit-msg-guard ----------
 echo m >> src/api/a.txt && git add src/api/a.txt
 git commit -qm "wip" >/dev/null 2>&1 && bad "msg: 'wip' NOT blocked" || ok "msg: 'wip' blocked"
@@ -150,11 +206,32 @@ git push -q origin main:grind/feat/x3 2>/dev/null && ok "landable: fenced exampl
 rm .claude/grind/gate-ledger.md
 GRIND_PROTECTED_BRANCHES="release" git push -q origin main 2>/dev/null \
   && ok "landable: GRIND_PROTECTED_BRANCHES override honored" || bad "landable: override ignored"
+# window-only: after the window ends, the founder's direct pushes are not grind's business
+bash "$G/lock.sh" release >/dev/null 2>&1
+git push -q origin main 2>/dev/null \
+  && ok "landable: protected push ALLOWED after the window (window-only policy)" || bad "landable: protected push still blocked after the window"
+# ...but an open gate keeps the branch non-landable even post-window (self-quenching)
+printf -- '- [ ] G-02 | needs:check | blocks: x\n' >> .claude/grind/gate-ledger.md
+git push -q origin main:grind/feat/x4 2>/dev/null && bad "landable: post-window open gate NOT blocking" || ok "landable: open gate still blocks after the window"
+rm .claude/grind/gate-ledger.md
+expect_rc "lock re-acquire after release" 0 bash "$G/lock.sh" acquire w1b
 
 # ---------- 10. cost-table ----------
 [ "$(bash "$G/cost-table" p90 doc)" = "6" ] && ok "cost: conservative default (doc=6)" || bad "cost: default wrong"
 bash "$G/cost-table" record test-add 7 >/dev/null; bash "$G/cost-table" record test-add 9 >/dev/null; bash "$G/cost-table" record test-add 11 >/dev/null
 [ "$(bash "$G/cost-table" p90 test-add)" = "11" ] && ok "cost: p90 of [7,9,11] = 11" || bad "cost: p90 wrong"
+
+# ---------- 10b. audit: concurrent appends keep one chain (flock) ----------
+# Builders in worktrees share the main-root audit log; racing read+append used
+# to fork the chain (looks like tampering). Skipped where fcntl is unavailable.
+if "$PYBIN" -c 'import fcntl' 2>/dev/null; then
+  for i in 1 2 3 4 5 6 7 8; do GJ audit-append .claude/grind/audit.log race_test "worker=$i" & done
+  wait
+  bash "$G/audit-verify" >/dev/null 2>&1 \
+    && ok "audit: 8 concurrent appends, chain intact (flock)" || bad "audit: concurrent appends forked the chain"
+else
+  echo "  skip- audit concurrency (no fcntl on this platform)"
+fi
 
 # ---------- 11. audit chain: intact, then tamper detected ----------
 expect_rc "audit: chain intact" 0 bash "$G/audit-verify"
