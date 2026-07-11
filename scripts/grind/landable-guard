@@ -7,8 +7,13 @@
 #      (Incident: the regex once matched only needs:/qa|/cso — semi-grind's
 #      `needs:decision` gates pushed straight through the guard.)
 #   2. Never push directly to a protected branch (GRIND_PROTECTED_BRANCHES from
-#      config.sh / project.conf; default "dev main master"). Overridable for a
-#      genuine human emergency with GRIND_ALLOW_PUSH=1 (prints why).
+#      config.sh / project.conf; default "dev main master"). WINDOW-ONLY: this
+#      is grind policy for the autonomous loop, enforced only while .active
+#      exists — it must not permanently hijack the founder's normal push
+#      workflow (incident: one /grind run left the repo refusing every direct
+#      push to main forever). Permanent "PRs only" belongs to remote branch
+#      protection, not this hook. Override for a genuine emergency mid-window
+#      with GRIND_ALLOW_PUSH=1 (prints why).
 #
 # Reads refs from stdin (git pre-push protocol: "<local_ref> <local_sha> <remote_ref> <remote_sha>").
 set -o pipefail
@@ -35,14 +40,19 @@ if [ -f "$GRIND_GATELEDGER" ]; then
   fi
 fi
 
-# 2. no direct push to a protected branch (default: dev main master)
+# 2. no direct push to a protected branch (default: dev main master) — but ONLY
+#    while a grind window is active; outside a window the founder's normal
+#    pushes are none of grind's business. (Stdin must still be drained either way.)
+window_active=0
+command -v grind_active >/dev/null 2>&1 && grind_active && window_active=1
 while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$window_active" = "1" ] || continue
   for prot in ${GRIND_PROTECTED_BRANCHES-dev main master}; do
     if [ "$remote_ref" = "refs/heads/$prot" ]; then
       if [ "${GRIND_ALLOW_PUSH:-0}" = "1" ]; then
         echo "landable-guard: GRIND_ALLOW_PUSH=1 set — allowing push to ${remote_ref} (policy says PRs only; you are overriding)." >&2
       else
-        echo "!!! GRIND LANDABLE-GUARD: refusing direct push to ${remote_ref} — open a PR instead. Override: GRIND_ALLOW_PUSH=1 !!!" >&2
+        echo "!!! GRIND LANDABLE-GUARD: refusing direct push to ${remote_ref} during an active grind window — open a PR instead. Override: GRIND_ALLOW_PUSH=1 !!!" >&2
         fail=1
       fi
     fi
