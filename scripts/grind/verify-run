@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# verify-run — the Verifier's non-interactive gate, project-agnostic.
+#
+# The original project hardcoded its gates (yarn test/lint/typecheck,
+# manage.py check). This resolves them generically:
+#   1. <repo>/.claude/grind/verify-cmds exists -> run each non-comment line as a
+#      shell command (the EXPLICIT per-repo contract; one command per line).
+#   2. else auto-detect by project type and run every gate that applies:
+#        package.json  -> <runner> run typecheck / lint / test (only scripts that exist;
+#                         runner = yarn|pnpm|npm by lockfile)
+#        pyproject.toml/setup.py -> ruff check . ; mypy . ; pytest -q  (only tools present)
+#        Cargo.toml    -> cargo clippy -q --no-deps -- -D warnings ; cargo test -q
+#        go.mod        -> go vet ./... ; go test ./...
+#        manage.py     -> python3 manage.py check
+#        Makefile with a test target -> make test
+#
+# Exit codes: 0 = all gates green · 1 = a gate failed (output shown)
+#             3 = NO GATES DETECTED — the branch is UNVERIFIED, not "green";
+#                 add .claude/grind/verify-cmds or a test runner, or log a gate.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 1
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+
+CMDS=()
+
+if [ -f "$GRIND_DIR/verify-cmds" ]; then
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in ""|\#*) continue ;; esac
+    CMDS+=("$line")
+  done < "$GRIND_DIR/verify-cmds"
+else
+  # --- auto-detect ---
+  if [ -f package.json ]; then
+    runner="npm run"
+    [ -f yarn.lock ] && runner="yarn"
+    [ -f pnpm-lock.yaml ] && runner="pnpm run"
+    for script in typecheck lint test; do
+      if "$GRIND_PYTHON" -c "import json,sys; sys.exit(0 if '$script' in json.load(open('package.json')).get('scripts',{}) else 1)" 2>/dev/null; then
+        CMDS+=("$runner $script")
+      fi
+    done
+  fi
+  if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
+    command -v ruff   >/dev/null 2>&1 && CMDS+=("ruff check .")
+    command -v mypy   >/dev/null 2>&1 && [ -f pyproject.toml ] && grep -q '\[tool\.mypy\]' pyproject.toml 2>/dev/null && CMDS+=("mypy .")
+    command -v pytest >/dev/null 2>&1 && CMDS+=("pytest -q")
+  fi
+  [ -f manage.py ]  && CMDS+=("python3 manage.py check")
+  if [ -f Cargo.toml ]; then
+    CMDS+=("cargo clippy -q --no-deps -- -D warnings" "cargo test -q")
+  fi
+  if [ -f go.mod ]; then
+    CMDS+=("go vet ./..." "go test ./...")
+  fi
+  if [ ${#CMDS[@]} -eq 0 ] && [ -f Makefile ] && grep -qE '^test:' Makefile; then
+    CMDS+=("make test")
+  fi
+fi
+
+if [ ${#CMDS[@]} -eq 0 ]; then
+  echo "!!! GRIND VERIFY-RUN: no gates detected — this branch is UNVERIFIED, not green." >&2
+  echo "Add $GRIND_DIR/verify-cmds (one command per line) or a standard test setup." >&2
+  grind_audit "verify_run" "NO_GATES"
+  exit 3
+fi
+
+fail=0
+for cmd in "${CMDS[@]}"; do
+  echo "verify-run: \$ $cmd"
+  if bash -c "$cmd"; then
+    echo "verify-run: PASS  $cmd"
+  else
+    rc=$?
+    echo "verify-run: FAIL($rc)  $cmd" >&2
+    fail=1
+  fi
+done
+
+if [ "$fail" = "1" ]; then
+  grind_audit "verify_run" "FAIL cmds=${#CMDS[@]}"
+  echo "verify-run: RED — at least one gate failed (report honestly; do not merge)" >&2
+  exit 1
+fi
+grind_audit "verify_run" "PASS cmds=${#CMDS[@]}"
+echo "verify-run: GREEN — ${#CMDS[@]} gate(s) passed"
+exit 0

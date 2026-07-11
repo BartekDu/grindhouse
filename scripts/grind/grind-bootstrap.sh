@@ -9,10 +9,11 @@
 #   1. Resolves G = the guardrail-script dir. Project-local `<repo>/scripts/grind`
 #      WINS when present (Underline keeps its committed, version-controlled copy +
 #      lefthook wiring); otherwise the global bundle that ships with this skill.
-#   2. Ensures scope-guard (pre-commit) + landable-guard (pre-push) are actually
-#      armed for THIS repo. The guardrails are the law; a grind with no hooks is
-#      lawless. Idempotent: already-wired repos (lefthook grind-* / a grind-marked
-#      git hook) are left untouched.
+#   2. Ensures scope-guard (pre-commit) + landable-guard (pre-push) +
+#      commit-msg-guard (commit-msg) are actually armed for THIS repo. The
+#      guardrails are the law; a grind with no hooks is lawless. Idempotent:
+#      already-wired repos (lefthook grind-* / a grind-marked git hook) are left
+#      untouched.
 #
 # Exit/return: sets G + GRIND_BOOTSTRAP_STATUS; prints a one-line status the model
 # surfaces to the founder before going autonomous. Returns non-zero only when it
@@ -53,20 +54,22 @@ grind_bootstrap() {
   # 2b. native git-hook wiring with our marker — already done.
   if [ "$wired" = "no" ] \
      && grep -ql "$marker" "$hookdir/pre-commit" 2>/dev/null \
-     && grep -ql "$marker" "$hookdir/pre-push" 2>/dev/null; then
+     && grep -ql "$marker" "$hookdir/pre-push" 2>/dev/null \
+     && grep -ql "$marker" "$hookdir/commit-msg" 2>/dev/null; then
     wired="git-hook"
   fi
 
   if [ "$wired" = "no" ]; then
     mkdir -p "$hookdir" 2>/dev/null || { GRIND_BOOTSTRAP_STATUS="HOOKDIR_UNWRITABLE"; echo "grind-bootstrap: cannot write $hookdir" >&2; return 3; }
     local installed=() conflict=()
-    _grind_install_hook "$hookdir/pre-commit"  "$G/scope-guard"    "$marker" && installed+=(pre-commit) || conflict+=(pre-commit)
-    _grind_install_hook "$hookdir/pre-push"    "$G/landable-guard" "$marker" && installed+=(pre-push) || conflict+=(pre-push)
+    _grind_install_hook "$hookdir/pre-commit"  "$G/scope-guard"       "$marker" && installed+=(pre-commit) || conflict+=(pre-commit)
+    _grind_install_hook "$hookdir/pre-push"    "$G/landable-guard"    "$marker" && installed+=(pre-push) || conflict+=(pre-push)
+    _grind_install_hook "$hookdir/commit-msg"  "$G/commit-msg-guard"  "$marker" && installed+=(commit-msg) || conflict+=(commit-msg)
     if [ "${#conflict[@]}" -gt 0 ]; then
       wired="partial"
       GRIND_BOOTSTRAP_STATUS="HOOK_CONFLICT:${conflict[*]}"
       echo "grind-bootstrap: G=$G ($g_origin); existing non-grind hook(s) [${conflict[*]}] in $hookdir — NOT clobbered." >&2
-      echo "  Add manually:  pre-commit -> 'bash $G/scope-guard'   pre-push -> 'bash $G/landable-guard'" >&2
+      echo "  Add manually:  pre-commit -> 'bash $G/scope-guard'   pre-push -> 'bash $G/landable-guard'   commit-msg -> 'bash $G/commit-msg-guard'" >&2
       return 4
     fi
     wired="git-hook(new:${installed[*]})"

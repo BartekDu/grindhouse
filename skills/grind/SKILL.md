@@ -87,14 +87,15 @@ a grind without its hooks is lawless. Every `$G/...` below uses this resolved va
 ## Branch model (cultured dev — three tiers)
 
 ```text
-dev
- └── grind-DD-MM-YYYY                 campaign integration branch (one per /grind run, off dev)
+<base>                                 the repo's base branch (auto-detected: origin/HEAD,
+ │                                     else dev|main|master; override via project.conf)
+ └── grind-DD-MM-YYYY                 campaign integration branch (one per /grind run, off base)
       └── grind/feat/<slug>           one per feature / concurrent builder (off the campaign branch)
 ```
 
-- **`grind-DD-MM-YYYY`** — the dated campaign branch (date via `date +%d-%m-%Y`, e.g. `grind-31-05-2026`). Cut from `dev` once at campaign start; it integrates the campaign's feature branches and is what the founder eventually PRs to `dev`.
+- **`grind-DD-MM-YYYY`** — the dated campaign branch (date via `date +%d-%m-%Y`, e.g. `grind-31-05-2026`). Cut from the base branch (`bash -c '. $G/config.sh; . $G/lib.sh; grind_base_branch'`) once at campaign start; it integrates the campaign's feature branches and is what the founder eventually PRs back to base.
 - **`grind/feat/<slug>`** — one per feature / focus-slice, cut from the campaign branch, worked in its own worktree `.claude/worktrees/grind-feat-<slug>` (gitignored). One feature = one branch = one reviewable unit.
-- Worktrees/branches are named consistently and live under the gitignored `.claude/worktrees/`. NEVER commit to `dev`/`main` or a shared "grind trunk".
+- Worktrees/branches are named consistently and live under the gitignored `.claude/worktrees/`. NEVER commit to a protected branch (`GRIND_PROTECTED_BRANCHES`, default `dev main master`) or a shared "grind trunk".
 
 ## Step 0 — Focus contract + branches + transparency (first window only)
 
@@ -104,8 +105,8 @@ On a cron-resumed window, SKIP straight to loading the stored focus + branches f
 1. If the user gave a `[focus]`, propose a contract from it; else AskUserQuestion to confirm. The contract is **path globs**, not a phrase:
    - `allowed_globs` (e.g. `apps/mobile/**`), `forbidden_globs` (e.g. `underline/api/**`, `infra/**`, `**/migrations/**`), `allowed_operations` (e.g. "add tests; refactor existing components; NO new feature routes").
 2. Write it into `state.json` (`.focus`), reset `window_counter` to 0 if a fresh run.
-3. **Branches (3-tier).** Compute `CAMPAIGN=grind-$(date +%d-%m-%Y)`. If it doesn't exist, cut it from `dev`; store as `state.json .campaign_branch`. Then derive `grind/feat/<slug>` per feature/focus-slice (lowercase-dash slug; e.g. "mobile coverage" → `grind/feat/mobile-coverage`), cut **from the campaign branch**, store each in `state.json .sessions[]`. The base for grinding work is always a `grind/feat/*` branch — never `dev`, never the campaign branch directly, never a shared trunk. (Cron-resumed windows reuse the stored branches; do not re-cut.)
-4. **Gitignore hygiene first.** Run `bash $G/hygiene-check fix` — it appends any missing scratch-noise ignores (`.claude/worktrees/`, `db.sqlite3`, `*.tmp`) to `.gitignore`. If it added entries, commit `.gitignore` on the campaign branch **before any other work** (`chore: gitignore scratch noise (worktrees, sqlite, tmp)`). This is why the loop never resurfaces the 455-untracked-file mess.
+3. **Branches (3-tier).** Compute `CAMPAIGN=grind-$(date +%d-%m-%Y)`. If it doesn't exist, cut it from the base branch (`grind_base_branch` — auto-detected, overridable via `project.conf`); store as `state.json .campaign_branch`. Then derive `grind/feat/<slug>` per feature/focus-slice (lowercase-dash slug; e.g. "mobile coverage" → `grind/feat/mobile-coverage`), cut **from the campaign branch**, store each in `state.json .sessions[]`. The base for grinding work is always a `grind/feat/*` branch — never `dev`, never the campaign branch directly, never a shared trunk. (Cron-resumed windows reuse the stored branches; do not re-cut.)
+4. **Gitignore hygiene first.** Run `bash $G/hygiene-check fix` — it appends any missing scratch-noise ignores (`.claude/worktrees/`, `*.tmp`, grind's volatile state files, + `GRIND_EXTRA_IGNORES` from `project.conf`) to `.gitignore`. If it added entries, commit `.gitignore` on the campaign branch **before any other work** (`chore: gitignore scratch noise (worktrees, tmp)`). This is why the loop never resurfaces the 455-untracked-file mess.
 4b. **Swarm board (team player, cross-checkout).** `bash $G/swarm-claim.sh check` — exit 2 means a LIVE foreign swarm (another user/machine) owns overlapping focus globs: narrow your globs or negotiate via a comment on the conflicting `swarm-claim` issue; never bulldoze. On CLEAR: `bash $G/swarm-claim.sh claim` to post yours. Treat foreign claims like your own `forbidden_globs`. (`LOCAL_ONLY` = no gh/remote — same-machine concurrency is already covered by lock.sh + the run-log table; proceed.)
 4c. **Knowledge graph freshness.** If `graphify-out/graph.json` exists: refresh it when behind HEAD (`graphify <repo> --update`) and ensure the post-commit rebuild hook is armed (`graphify hook install` — it appends; no conflict with scope-guard/landable-guard). If absent, note it in the transparency print (grind proceeds; scouts fall back to grep) — building a first graph is the founder's call, not a window task.
 5. **Transparency — print before going autonomous:** the focus label + the **campaign branch** + the planned **feature branches** + allowed/forbidden globs + the ordered work plan (the ladder, filtered to focus) + floor/cap (`config.sh`) + "stop conditions: quota floor, human-gate, or work-exhausted." Plus the **concurrency table** (below). The founder approves the shape, then can walk away.
@@ -120,7 +121,7 @@ When the loop fans out, it uses this **standard council** and **tables every con
 |---|---|---|---|
 | **Orchestrator** | 1 (the main `/grind` session) | `grind-DD-MM-YYYY` | quota gate, branch model, dispatch, the concurrency table, merge verified feature branches → campaign, state/audit |
 | **Builder** | 1 per concurrent feature-slice (≤ MAX_CONCURRENT) | `grind/feat/<slug>` (own worktree) | implement the slice; commit per task (scope-guarded, conventional msgs); report `ready` |
-| **Verifier** | 1 per builder (cheap, adversarial) | read-only on the builder's branch | run the NON-interactive gates (`/codex` pass-fail + `yarn test/lint/typecheck` / `manage.py check`) before the orchestrator merges; a builder branch merges only on a clean verifier pass |
+| **Verifier** | 1 per builder (cheap, adversarial) | read-only on the builder's branch | run the NON-interactive gates: `bash $G/verify-run` (explicit `.claude/grind/verify-cmds`, else auto-detected test/lint/typecheck for the project type) — plus a `/codex` pass-fail where installed — before the orchestrator merges; a builder branch merges only on a clean verifier pass. `verify-run` exit 3 = NO gates detected → the branch is UNVERIFIED, not green: add gates or log it loudly |
 | **Scout** | 1, when the in-focus queue runs low | read-only | refresh the in-focus backlog candidates (next grindable tasks) so the loop never idles early while quota remains — **graphify-query first** (see Context acquisition), grep only as fallback |
 
 ### Context acquisition — graph-first (inject into EVERY scout/builder/verifier prompt)
@@ -182,15 +183,15 @@ Repeat until a STOP:
    - **(c)** always-safe tech-debt inside focus — add tests / raise coverage, build the `!!! TRAP !!!` → TRAPS.md index, observability backfill, lint/type hardening;
    - **(d)** → Floor activity.
      For (b)/(c), first pass the value gate: `bash $G/value-gate "<justification naming an objective win>"` (a closed backlog id, a coverage increase, or a lint/type-error decrease). REJECT → skip the task + log it; do not do unjustifiable busywork.
-3. **Execute on a `grind/feat/<slug>` branch.** Small tasks inline; independent tasks fan out per the council (builders on disjoint-scope worktrees, ≤ MAX_CONCURRENT). Commit per task onto the feature branch — the **scope-guard pre-commit hook rejects out-of-focus paths**, so a blocked commit means you strayed: narrow, don't widen the focus. Each commit message is conventional `<scope>: <subject>` (per CLAUDE.md §13 — the commit-msg hook enforces it), with a why-body when non-obvious + the task id (e.g. `Task: T-07`). NEVER ship opaque messages (`wip`, `stuff`, `fixes`, `misc`).
-4. **Verify then merge.** A builder's feature branch merges into the campaign branch only after its Verifier passes (non-interactive gates clean). Update the concurrency table (`ready`→`merged`).
+3. **Execute on a `grind/feat/<slug>` branch.** Small tasks inline; independent tasks fan out per the council (builders on disjoint-scope worktrees, ≤ MAX_CONCURRENT). Commit per task onto the feature branch — the **scope-guard pre-commit hook rejects out-of-focus paths**, so a blocked commit means you strayed: narrow, don't widen the focus. Each commit message is conventional `<scope>: <subject>` (the **commit-msg-guard hook enforces it** during a window), with a why-body when non-obvious + the task id (e.g. `Task: T-07`). NEVER ship opaque messages (`wip`, `stuff`, `fixes`, `misc`).
+4. **Verify then merge.** A builder's feature branch merges into the campaign branch only after its Verifier passes (`bash $G/verify-run` clean). Update the concurrency table (`ready`→`merged`).
 5. **Leave the tree clean.** After each task: `git status` empty of stray untracked files (commit real work, or ignore scratch via `bash $G/hygiene-check fix`). The between-task invariant is a boring, clean `git status`.
 6. **Record cost.** If you have a fresh pre/post quota delta, `bash $G/cost-table record <TASK_TYPE> <DELTA_PCT>`. Update `state.json` (atomic) + append `run-log.md`.
 7. Loop to 1.
 
 ## Interactive-skill policy (the founder-flagged trap)
 
-Use freely: non-interactive checks — `/codex` (pass/fail), `/qa-only` (report), and the raw `yarn ... test/lint/typecheck`, `manage.py check`, `makemigrations --check` gates.
+Use freely: non-interactive checks — `bash $G/verify-run`, `/codex` (pass/fail) and `/qa-only` (report) where installed, and the raw test/lint/typecheck gates of the project.
 NEVER run an interactive skill (`/qa` fix-loop, `/cso`, `/autoplan`, `/office-hours`, `/design-*`) and answer its questions on the founder's behalf. When a task needs one, do the autonomous prep, then **log a gate** in `gate-ledger.md` (`- [ ] G-NN | needs:/cso | blocks: ... | trigger: ... | clear: ...`) and move on. The `landable-guard` pre-push hook then keeps the branch non-landable until the founder clears it — say "build green, gates blocked," never "green."
 
 ## Floor activity (work-exhausted) — one-shot, then STOP
@@ -202,13 +203,13 @@ When the ladder is dry (no in-focus tasks pass the value gate), write ONE `.clau
 1. `bash $G/quota-gate.sh --force` to take a fresh reading; **log the exact `five_hour_pct_left` + `week_pct_left` + stop-reason** (`floor`/`weekly`/`work-exhausted`/`max-windows`/`human-gate`/`kill`) to `run-log.md` and `state.json.stop_log`. (`grind_audit` also records it in the tamper-evident log.)
 2. Commit any WIP onto its `grind/feat/<slug>` branch; merge clean+verified feature branches into the campaign branch; refresh the knowledge graph if present (`graphify <repo> --update`); confirm `git status` is clean (`bash $G/hygiene-check verify`). Regenerate `RESUME.md` (where we are / next / open gates) + the final concurrency manifest.
 3. `bash $G/lock.sh release`. Swarm board: **chaining** → `bash $G/swarm-claim.sh renew`; **stopping for good** (weekly/kill/work-exhausted/max-windows) → `bash $G/swarm-claim.sh release` — a parked swarm that hoards globs is not a team player.
-4. **The campaign branch is the reviewable unit; the founder opens the PR.** Do NOT push to `dev`/`main` and do NOT auto-open or auto-merge. Surface in the end report: the campaign branch, the feature branches + their commit counts, the concurrency manifest, and "ready for you to open a PR `grind-DD-MM-YYYY` → `dev` (gates blocked: …)" if any gates are open. Pushing the campaign/feature branches to origin is fine; opening/merging the PR is the founder's call.
+4. **The campaign branch is the reviewable unit; the founder opens the PR.** Do NOT push to a protected branch and do NOT auto-open or auto-merge. Surface in the end report: the campaign branch, the feature branches + their commit counts, the concurrency manifest, and "ready for you to open a PR `grind-DD-MM-YYYY` → `<base>` (gates blocked: …)" if any gates are open. Pushing the campaign/feature branches to origin is fine; opening/merging the PR is the founder's call.
 5. **Chain?** Only if `window_counter < MAX_WINDOWS` AND in-focus work remains AND not STOP_WEEKLY/STOP_KILL: `CronCreate` the next window at the 5h reset time with the resume prompt (loads focus + branches from state.json, skips Step 0), `state_set '.window_counter += 1'`, then STOP this turn. Else STOP and surface the status+gate report — do not chain.
 6. **Campaign-end retro (optional, founder-present only):** offer `/retro` — learnings → `/learn`; any taste answers or recurring gate patterns → `RULE-NNN` candidates for the next `/semi-grind`. The office that learns; never run it into an empty room.
 
 ## Hard rules (never, under any quota pressure)
 
-- Work on `grind/feat/<slug>` branches (cut from the dated campaign branch `grind-DD-MM-YYYY`, itself off `dev`) ONLY — never commit to `dev`/`main`/the campaign branch directly/a shared grind trunk, never put a second unrelated focus on one feature branch (one feature = one branch = one reviewable unit), never push to `dev`/`main` (landable-guard + §11), never force-push · never `gh secret set` · never ship LLM-authored user-facing copy (PLACEHOLDER only, §6) · never make taste/algorithmic judgments (§7) · never expand scope mid-window ("while we're here" → gate-ledger/backlog) · `/autoplan` never on P1-scope or CORE-refactor · `/cso` only after build+`/review`.
+- Work on `grind/feat/<slug>` branches (cut from the dated campaign branch `grind-DD-MM-YYYY`, itself off the base branch) ONLY — never commit to a protected branch/the campaign branch directly/a shared grind trunk, never put a second unrelated focus on one feature branch (one feature = one branch = one reviewable unit), never push to a protected branch (landable-guard enforces; PRs only), never force-push · never `gh secret set` · never ship LLM-authored user-facing copy (PLACEHOLDER only, §6) · never make taste/algorithmic judgments (§7) · never expand scope mid-window ("while we're here" → gate-ledger/backlog) · `/autoplan` never on P1-scope or CORE-refactor · `/cso` only after build+`/review`.
 - Concurrent builders ALWAYS have disjoint write-scope (no shared glob) and each its own `grind/feat/<slug>` branch + worktree; a builder merges to the campaign branch only after its verifier passes. Always table every concurrent session.
 - Every commit is conventional `<scope>: <subject>` + a why-body when non-obvious + the task id; no `wip`/`stuff`/opaque messages. Leave `git status` clean between tasks — track real work, ignore scratch noise via `hygiene-check fix`.
 - A blocked hook is a signal you strayed, not an obstacle to bypass. Never `--no-verify`, never widen `forbidden_globs`, never edit the audit log.
@@ -217,8 +218,8 @@ When the ladder is dry (no in-focus tasks pass the value gate), write ONE `.clau
 ## Rules for agents
 
 - **Never** treat "task list empty" as the stop condition — that is the bug. Stop only on quota floor / human-gate / genuinely-exhausted-in-focus-work.
-- **Never** reinterpret or bypass `quota-gate.sh` / `scope-guard` / `landable-guard` / `hygiene-check` exit codes.
-- **Never** commit to `dev`/`main`/the campaign branch directly/a shared trunk; build on `grind/feat/<slug>` branches off the dated campaign branch — one feature = one branch = one reviewable unit.
+- **Never** reinterpret or bypass `quota-gate.sh` / `scope-guard` / `landable-guard` / `commit-msg-guard` / `hygiene-check` / `verify-run` exit codes.
+- **Never** commit to a protected branch/the campaign branch directly/a shared trunk; build on `grind/feat/<slug>` branches off the dated campaign branch — one feature = one branch = one reviewable unit.
 - **Never** dispatch two concurrent builders with overlapping write-scope; never skip the verifier before merging a feature branch.
 - **Never** leave stray untracked files between tasks — track real work or ignore noise via `hygiene-check fix`; the tree stays boringly clean.
 - **Never** write an opaque commit message — conventional `<scope>: <subject>` + why-body + task id, always.
@@ -227,7 +228,7 @@ When the ladder is dry (no in-focus tasks pass the value gate), write ONE `.clau
 - **Never** dispatch a builder task that won't reach a commit within ~10 minutes — decompose it; savepoints are what make `/soft-pause` and power cuts cheap.
 - **Never** kill units on quota-gate exit 7 (SOFT_PAUSE) — drain each to its savepoint, settle, park.
 - **Never** proceed past a `swarm-claim.sh check` exit 2 — narrow globs or negotiate on the issue; foreign claims = your forbidden_globs.
-- **Always** cut the dated campaign branch from `dev` + feature branches from the campaign branch; store them in `state.json` (`.campaign_branch`, `.sessions[]`); reuse (not re-cut) on cron windows.
+- **Always** cut the dated campaign branch from the base branch (`grind_base_branch`) + feature branches from the campaign branch; store them in `state.json` (`.campaign_branch`, `.sessions[]`); reuse (not re-cut) on cron windows.
 - **Always** table every concurrent session (role/task/branch/scope/status/gate) at each dispatch wave + on completion.
 - **Always** keep the focus a glob contract, confirmed at start, reused (not re-asked) on cron windows.
 - **Always** log the exact quota number + reason at every stop.
