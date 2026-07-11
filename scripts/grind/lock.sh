@@ -16,19 +16,25 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exi
 mkdir -p "$GRIND_DIR"
 
 STALE_SEC=$((6*3600))
-pid_alive() { kill -0 "$1" 2>/dev/null; }
 
 case "${1:-}" in
   acquire)
     win="${2:-?}"
-    # reclaim stale lock
+    # reclaim stale lock — by AGE ONLY. The recorded pid is the one-shot
+    # lock.sh process itself, which exits the moment acquire returns, so
+    # pid-liveness is ALWAYS false and a pid check silently reclaimed every
+    # held lock (incident: selftest — a second acquire while window 1 was live
+    # returned ACQUIRED; two windows could run concurrently). The single-run
+    # contract is now: explicit `lock.sh release`, or age > STALE_SEC (6h,
+    # crash recovery — same threshold /soft-pause documents). pid/session stay
+    # recorded for forensics.
     if [ -d "$GRIND_LOCK" ]; then
       lpid="$(cat "$GRIND_LOCK/pid" 2>/dev/null || echo 0)"
       lts="$(cat "$GRIND_LOCK/ts" 2>/dev/null || echo 0)"
       age=$(( $(grind_now) - lts ))
-      if pid_alive "$lpid" && [ "$age" -lt "$STALE_SEC" ]; then
-        echo "LOCKED held by pid=$lpid window=$(cat "$GRIND_LOCK/window" 2>/dev/null) age=${age}s" >&2
-        grind_audit "lock" "acquire DENIED (held pid=$lpid)"
+      if [ "$age" -lt "$STALE_SEC" ]; then
+        echo "LOCKED held (window=$(cat "$GRIND_LOCK/window" 2>/dev/null) age=${age}s). Release it or wait out staleness (${STALE_SEC}s)." >&2
+        grind_audit "lock" "acquire DENIED (held window=$(cat "$GRIND_LOCK/window" 2>/dev/null) age=${age}s)"
         exit 1
       fi
       echo "lock.sh: reclaiming stale lock (pid=$lpid age=${age}s)" >&2
@@ -44,7 +50,9 @@ case "${1:-}" in
       grind_audit "lock" "acquire DENIED (dirty tree)"
       exit 2
     fi
-    if [ -f "$GRIND_MERGE_HEAD" ] 2>/dev/null || [ -f ".git/MERGE_HEAD" ]; then
+    # ($GRIND_MERGE_HEAD was never defined and .git/MERGE_HEAD is wrong inside
+    # a worktree, where .git is a file — --git-path resolves both.)
+    if [ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
       echo "!!! GRIND LOCK: mid-merge — refusing to start." >&2
       grind_audit "lock" "acquire DENIED (mid-merge)"
       exit 2
