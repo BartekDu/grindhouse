@@ -59,6 +59,7 @@ allowed-tools:
 | Savepoint contract | `references/savepoints.md` | commit ≤10 min; pause and power cuts become cheap |
 | Swarm etiquette | `references/swarm-etiquette.md` | gh-issue ownership board; foreign claims = your forbidden_globs |
 | Triple-write trap rule | `references/triple-write.md` | traps land in commit body + adjacent .md + `!!! TRAP !!!` comment |
+| GH-issue collaboration | `references/gh-collab.md` | human↔swarm bridge: `grind-ok` = TODO intake, `human-gate` = mirrored gates, `PAUSE` comment = soft-pause; web UI is enough — no VS Code/shell |
 
 **Deliberately NOT in the framework** (documented as opt-in, with why):
 per-PR mandatory codex (heavy for a solo founder — codex is mandatory only at

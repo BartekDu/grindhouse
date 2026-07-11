@@ -146,20 +146,13 @@ Write `state.json .sprint.team[]` + a run-log table. Per role:
   (promote-to-agent rule; agents are durable memory — additive updates only,
   never `persona-v2` forks). Novel role → write the persona file BEFORE
   dispatch, not inline.
-- **Model matching (difficulty → model), wired into `Agent` / Workflow `agent()`
-  `opts.model` + `opts.effort`:**
-
-| Work | Model | Effort |
-|---|---|---|
-| web/repo/doc scouting, log trawls | sonnet | medium |
-| mechanical bulk edits, formatting, chunk extraction | haiku | low |
-| build/verify runs, test authoring | sonnet | high |
-| architecture, taste, merge conflicts, orchestration, GATE-class judgment | opus/fable | high/max |
-
-When unsure between tiers, take the cheaper one for read-only roles and the
-stronger one for anything that writes code the founder will review. Record
-actual per-task quota deltas via `bash $G/cost-table record` so the matching
-gets empirical over time.
+- **Model matching (difficulty → model):** take the matrix from
+  `~/.claude/skills/grind/references/staffing.md` — the engine-wide canonical
+  (moved there 2026-07-11; scouting=sonnet/medium … GATE-class=opus-fable/high-max),
+  incl. the quota-aware downgrade rule (`GRIND_MODEL_DOWNGRADE_PCT`). Wire into
+  `Agent` / Workflow `agent()` `opts.model` + `opts.effort`. Record actual
+  per-task quota deltas via `bash $G/cost-table record` so the matching gets
+  empirical over time.
 
 ## S5 — Execute (waves on the Workflow engine)
 

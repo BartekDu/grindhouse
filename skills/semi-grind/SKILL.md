@@ -322,6 +322,14 @@ A subagent merges to the campaign branch only after its Verifier passes; the orc
 the merge + the concurrency table (reuse the `/grind` council: Orchestrator / Builder / Verifier
 / Scout, ≤ MAX_CONCURRENT, disjoint write-scope per builder).
 
+**Staffing (model × effort):** per `~/.claude/skills/grind/references/staffing.md` —
+consistency-lens = sonnet/medium; EVOLVE 4-lens = opus/high; mechanical fix builders =
+haiku–sonnet per the matrix; quota-aware downgrade rule applies (GATE-class never downgrades —
+defer instead). Wire via `agent()` `opts.model` + `opts.effort`. At window start and on every
+post-quiz resume, also check the `human-gate` issue inbox (one `gh issue list --label human-gate`
+call, best-effort) and fold repo-collaborator clearances into the gate-ledger — see
+`~/.claude/skills/culture/references/gh-collab.md`.
+
 ### Codex / finops cadence (locked convention 1)
 
 `codex exec` + `finops-lens` fire on the **EVOLVE branch ONLY** — when a cluster becomes a real

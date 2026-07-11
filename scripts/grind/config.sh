@@ -14,6 +14,10 @@ GRIND_HARD_STOP_WEEK_MODEL_PCT=10  # per-model weekly hard-stop (week_model_pct_
                                 # the gate was blind to it — a Fable grind could burn the model week
                                 # while the all-models bar looked fine.
 GRIND_RESERVE_BUFFER_PCT=5      # stop ACCEPTING new tasks at floor+buffer (15%)
+GRIND_MODEL_DOWNGRADE_PCT=25    # staffing downgrade: when the binding per-model weekly bar has
+                                # <= this % left, non-GATE roles drop one model tier
+                                # (opus->sonnet->haiku); GATE-class judgment defers instead.
+                                # See skills/grind/references/staffing.md (ratified 2026-07-11).
 GRIND_MAX_WINDOWS=8             # auto-chain cap: founder-authorized 2026-06-03 for the v0.5-mobile
                                 # self-chaining campaign (was 3). Weekly hard-stop is the real brake.
 GRIND_MAX_CONCURRENT=4         # fan-out cap: parallel feature-builders per window (disjoint scope each)

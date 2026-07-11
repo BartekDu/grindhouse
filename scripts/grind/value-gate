@@ -4,7 +4,7 @@
 # only creates review burden (codex's core warning). Model-judged "is this
 # valuable?" is itself rationalizable, so the bar is a measurable token, not vibes:
 #
-#   - a backlog id closed:   TODO-X | T24-N | SEC-N | LP-N | E-N | PR #N | R-NNN
+#   - a backlog id closed:   TODO-X | T24-N | SEC-N | LP-N | E-N | PR #N | R-NNN | issue #N / GH-N
 #   - a coverage increase:   the word "coverage" + a +N or %% delta
 #   - fewer lint/type errors: "lint" or "type" + a -N delta
 #
@@ -21,7 +21,7 @@ just="${1:-}"
 [ -n "$just" ] || grind_die 'usage: value-gate "<justification naming an objective win>"'
 
 # objective-win patterns
-if printf '%s' "$just" | grep -qiE '(TODO-[A-Z]+|T24-[0-9]+|SEC-[0-9]+|LP-?[0-9]+|E[0-9]+|PR[ ]*#?[0-9]+|R-[0-9]{3})' \
+if printf '%s' "$just" | grep -qiE '(TODO-[A-Z]+|T24-[0-9]+|SEC-[0-9]+|LP-?[0-9]+|E[0-9]+|PR[ ]*#?[0-9]+|R-[0-9]{3}|issue[ ]*#?[0-9]+|GH-[0-9]+)' \
    || printf '%s' "$just" | grep -qiE 'coverage.*[+][0-9]|coverage.*[0-9]+%' \
    || printf '%s' "$just" | grep -qiE '(lint|type|mypy|eslint|ruff).*(-[0-9]+|fewer|down|0 errors)'; then
   grind_audit "value_gate" "PASS claim=$just"

@@ -108,7 +108,9 @@ On a cron-resumed window, SKIP straight to loading the stored focus + branches f
 4. **Gitignore hygiene first.** Run `bash $G/hygiene-check fix` — it appends any missing scratch-noise ignores (`.claude/worktrees/`, `db.sqlite3`, `*.tmp`) to `.gitignore`. If it added entries, commit `.gitignore` on the campaign branch **before any other work** (`chore: gitignore scratch noise (worktrees, sqlite, tmp)`). This is why the loop never resurfaces the 455-untracked-file mess.
 4b. **Swarm board (team player, cross-checkout).** `bash $G/swarm-claim.sh check` — exit 2 means a LIVE foreign swarm (another user/machine) owns overlapping focus globs: narrow your globs or negotiate via a comment on the conflicting `swarm-claim` issue; never bulldoze. On CLEAR: `bash $G/swarm-claim.sh claim` to post yours. Treat foreign claims like your own `forbidden_globs`. (`LOCAL_ONLY` = no gh/remote — same-machine concurrency is already covered by lock.sh + the run-log table; proceed.)
 4c. **Knowledge graph freshness.** If `graphify-out/graph.json` exists: refresh it when behind HEAD (`graphify <repo> --update`) and ensure the post-commit rebuild hook is armed (`graphify hook install` — it appends; no conflict with scope-guard/landable-guard). If absent, note it in the transparency print (grind proceeds; scouts fall back to grep) — building a first graph is the founder's call, not a window task.
+4d. **Human-gate inbox (gh, best-effort).** One `gh issue list --label human-gate --state open` call (skip silently if no gh/remote, like the swarm board): fold fresh repo-collaborator answers from issue comments into the gate-ledger as clearances; surface still-open gates in the transparency print. Also run this on every cron-resumed window start. See `~/.claude/skills/culture/references/gh-collab.md`.
 5. **Transparency — print before going autonomous:** the focus label + the **campaign branch** + the planned **feature branches** + allowed/forbidden globs + the ordered work plan (the ladder, filtered to focus) + floor/cap (`config.sh`) + "stop conditions: quota floor, human-gate, or work-exhausted." Plus the **concurrency table** (below). The founder approves the shape, then can walk away.
+5b. **Codex plan-pass (campaign kickoff only; ratified 2026-07-11).** One NON-interactive `codex exec` advisory pass over the focus contract + the ordered ladder from step 5. Fold CRITICAL/HIGH findings into the ladder autonomously; log the rest to the run log. This does not touch the interactive-planner ban below — `codex exec` never quizzes the founder and is already a standing verifier here. Skip gracefully (log + continue) if the codex CLI is absent/unauthed. Cost: one call per campaign, not per window.
 6. Acquire the window: `bash $G/lock.sh acquire <window_id>` (refuses on dirty tree / existing lock / failing gitignore hygiene). This writes `.active`, which arms the scope-guard pre-commit hook.
 
 ## Concurrency + agent council (STANDARD PRACTICE)
@@ -122,6 +124,8 @@ When the loop fans out, it uses this **standard council** and **tables every con
 | **Builder** | 1 per concurrent feature-slice (≤ MAX_CONCURRENT) | `grind/feat/<slug>` (own worktree) | implement the slice; commit per task (scope-guarded, conventional msgs); report `ready` |
 | **Verifier** | 1 per builder (cheap, adversarial) | read-only on the builder's branch | run the NON-interactive gates (`/codex` pass-fail + `yarn test/lint/typecheck` / `manage.py check`) before the orchestrator merges; a builder branch merges only on a clean verifier pass |
 | **Scout** | 1, when the in-focus queue runs low | read-only | refresh the in-focus backlog candidates (next grindable tasks) so the loop never idles early while quota remains — **graphify-query first** (see Context acquisition), grep only as fallback |
+
+**Staffing (model × effort per role):** take model + effort from `references/staffing.md` — the engine-wide difficulty→model matrix, incl. the quota-aware downgrade rule (binding per-model weekly bar ≤ `GRIND_MODEL_DOWNGRADE_PCT` → non-GATE roles drop one tier; GATE-class judgment defers, never downgrades). Wire via `Agent`/`agent()` `opts.model` + `opts.effort`.
 
 ### Context acquisition — graph-first (inject into EVERY scout/builder/verifier prompt)
 
@@ -178,7 +182,7 @@ Repeat until a STOP:
      rate-limits + caches; trust it.
 2. **Pick next work** by ladder (first non-empty tier, ALL filtered to the focus globs):
    - **(a)** explicit `state.json` tasks whose `depends_on` are met;
-   - **(b)** approved backlog — `TODOS.md` items + finishing open PRs **inside focus**;
+   - **(b)** approved backlog — `TODOS.md` items + finishing open PRs + open GH issues labeled `grind-ok` (human-filed TODOs; `gh issue list --label grind-ok`, skip silently without gh/remote) — ALL **inside focus**;
    - **(c)** always-safe tech-debt inside focus — add tests / raise coverage, build the `!!! TRAP !!!` → TRAPS.md index, observability backfill, lint/type hardening;
    - **(d)** → Floor activity.
      For (b)/(c), first pass the value gate: `bash $G/value-gate "<justification naming an objective win>"` (a closed backlog id, a coverage increase, or a lint/type-error decrease). REJECT → skip the task + log it; do not do unjustifiable busywork.
