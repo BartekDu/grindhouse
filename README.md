@@ -40,7 +40,10 @@ target repo, never in the scripts:
   `make test`); when NOTHING is detectable it exits 3 (= UNVERIFIED, not green).
 
 Prove the law after any change: `bash scripts/grind/selftest` (no network, no
-Claude auth — quota-gate runs against a faked cache).
+Claude auth — quota-gate runs against a faked cache). CI runs the same matrix
+on every push/PR on ubuntu + windows git-bash
+(`.github/workflows/selftest.yml`) — a fix that lands on one OS can no longer
+silently regress the other.
 
 ## Sync model (canonical → mirrors)
 
