@@ -69,6 +69,36 @@ the layer list doesn't); the slow-versionName scheme (good story — "don't writ
 checks the product can't cash", born from a 2-day 0.0.2→0.5.4 version race —
 but adopt per-project, not globally).
 
+## Recommended external tools (optional, per project)
+
+Third-party add-ons a grindhouse project can adopt. All **optional** and **not part of grindhouse** —
+install them yourself; attribution noted. Document whichever you adopt in the project's CLAUDE.md.
+
+**caveman** — compressed comms, ~75% fewer tokens, full technical accuracy. By Julius Brussee
+(`github.com/JuliusBrussee/caveman`).
+```
+/plugin marketplace add JuliusBrussee/caveman
+/plugin install caveman@caveman
+```
+Toggle with `/caveman lite|full|ultra`; disable with "stop caveman".
+
+**graphify** — turns a codebase into a knowledge graph; query architecture / call paths before
+Read/Grep sweeps. External CLI (`graphifyy`).
+```
+uv tool install graphifyy      # or: pip install graphifyy
+```
+Then use the `/graphify` skill. Convention: if `graphify-out/graph.json` exists, treat structure
+questions as a `graphify query` FIRST. Keep it fresh with a post-commit `graphify <repo> --update` hook.
+
+**codex** — multi-AI second opinion (review / challenge / consult). The CLI is OpenAI's; the
+`/codex` skill wrapper is gstack's.
+```
+npm install -g @openai/codex   # OpenAI Codex CLI
+codex login                    # or set $OPENAI_API_KEY / $CODEX_API_KEY
+```
+That gives raw `codex exec` / `codex review`. For the `/codex review|challenge|consult` wrapper
+(pass/fail gate, adversarial mode, session continuity) install **gstack** (its own tooling — see gstack docs).
+
 ## /culture seed <repo>
 
 1. Read the repo's CLAUDE.md (create a stub if absent).
