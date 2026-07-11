@@ -148,9 +148,15 @@ quota (convention 5, below) — but STILL run step 0 below first (resolve `$G` +
 0. **Resolve `$G` + arm hooks (every window, first action):**
    `source ~/.claude/skills/grind/scripts/grind/grind-bootstrap.sh`. Surface its status; STOP
    on non-zero. This is what makes the skill machine-global.
-1. Turn `[focus]` into the glob contract + the dimension list. Write to `state.json .focus`.
+1. Turn `[focus]` into the glob contract + the dimension list. **The contract MUST also
+   cover the campaign's own write surfaces:** append `RULEBOOK.md` and `<register-dir>/**`
+   to `allowed_globs` — the scope-guard pre-commit hook rejects any staged path outside
+   the globs, so without these two the consolidator's register/rulebook commits are
+   REJECTED mid-window. (`.claude/grind/**`, `scripts/grind/**` and `.gitignore` are
+   already always-allowed by scope-guard itself.) Write to `state.json .focus`.
    If no `[focus]`, AskUserQuestion to confirm the contract before going autonomous.
-2. **Branches:** `CAMPAIGN=grind-$(date +%d-%m-%Y)`; cut from `dev` if absent; store as
+2. **Branches:** `CAMPAIGN=grind-$(date +%d-%m-%Y)`; cut from the base branch
+   (`grind_base_branch`) if absent; store as
    `state.json .campaign_branch`. Derive `grind/feat/<slug>` per fix wave from the campaign
    branch.
 3. `bash $G/hygiene-check fix` (gitignore scratch noise); commit `.gitignore` if changed.

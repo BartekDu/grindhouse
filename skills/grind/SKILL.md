@@ -29,6 +29,7 @@ allowed-tools:
   - Agent
   - AskUserQuestion
   - Skill
+  - CronCreate
 ---
 
 # /grind — run to the quota floor, safely
