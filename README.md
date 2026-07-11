@@ -21,9 +21,26 @@ supporting cast
 
 | Path | What |
 |---|---|
-| `scripts/grind/` | **The law.** quota-gate (floor/weekly/model-weekly/reserve/kill/PAUSE), scope-guard (focus globs + worktree law, pre-commit), landable-guard (pre-push), value-gate, lock, hygiene-check, cost-table, audit-verify (hash chain), swarm-claim (gh-issue ownership board), grindjson.py, grind-bootstrap.sh |
+| `scripts/grind/` | **The law.** quota-gate (floor/weekly/model-weekly/reserve/kill/PAUSE), scope-guard (focus globs + worktree law, pre-commit), landable-guard (pre-push), commit-msg-guard (commit-msg, conventional messages), value-gate, verify-run (per-repo `verify-cmds`, else auto-detected gates), lock, hygiene-check, cost-table, audit-verify (hash chain), swarm-claim (gh-issue ownership board), selftest (the whole matrix, no network/auth), grindjson.py, grind-bootstrap.sh |
 | `skills/<name>/` | The seven skills (SKILL.md policy files + helpers; `skills/quota/` carries the `claude_usage.py` backup) |
 | `install.sh` | Sync this repo → `~/.claude/skills` (the live install) |
+
+## Per-repo configuration (all optional)
+
+The law bundle is **project-agnostic**; anything project-specific lives in the
+target repo, never in the scripts:
+
+- `<repo>/.claude/grind/project.conf` — shell vars sourced by `config.sh`:
+  `GRIND_BASE_BRANCH`, `GRIND_PROTECTED_BRANCHES`, `GRIND_EXTRA_IGNORES`,
+  `GRIND_VALUE_EXTRA_RE`. Example for Underline:
+  `docs/examples/underline.project.conf`.
+- `<repo>/.claude/grind/verify-cmds` — one verification command per line
+  (`#` comments). When absent, `verify-run` auto-detects gates from the project
+  type (npm/yarn/pnpm scripts, pytest/ruff/mypy, cargo, go, manage.py,
+  `make test`); when NOTHING is detectable it exits 3 (= UNVERIFIED, not green).
+
+Prove the law after any change: `bash scripts/grind/selftest` (no network, no
+Claude auth — quota-gate runs against a faked cache).
 
 ## Sync model (canonical → mirrors)
 
