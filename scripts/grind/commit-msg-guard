@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# commit-msg-guard — commit-msg hook. Enforces the /grind commit contract that
+# used to live only in prose (and, on the original project, in a repo-local
+# lefthook): conventional `<scope>: <subject>` messages, no opaque messages.
+#
+# NO-OP unless a grind window is active (.claude/grind/.active present), so it
+# never interferes with the founder's normal commits.
+#
+# Accepts:  <token>: <subject>            (scope-first, e.g. "auth: add token TTL test")
+#           <token>(<scope>): <subject>   (conventional-commits, e.g. "fix(auth): ...")
+#           Merge/Revert/fixup!/squash!   (git-generated)
+# Rejects:  non-conventional first lines, opaque subjects (wip/stuff/fixes/misc/
+#           update/changes/tmp/asdf), first lines > 72 chars.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 0
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+
+grind_active || exit 0   # not in a grind window → normal commit, do nothing
+
+msgfile="$1"
+[ -f "$msgfile" ] || exit 0
+first="$(head -n1 "$msgfile")"
+
+# git-generated messages pass untouched
+case "$first" in
+  Merge\ *|Revert\ *|fixup!*|squash!*) exit 0 ;;
+esac
+
+block() {
+  echo "!!! GRIND COMMIT-MSG-GUARD: commit blocked — $1 !!!" >&2
+  echo "  first line: $first" >&2
+  echo "  required:   <scope>: <subject>  or  <type>(<scope>): <subject>  (<= 72 chars," >&2
+  echo "              no wip/stuff/fixes/misc; add a why-body + task id when non-obvious)" >&2
+  grind_audit "commit_msg_guard" "BLOCKED: $1: $first"
+  exit 1
+}
+
+[ "${#first}" -le 72 ] || block "first line > 72 chars"
+
+printf '%s' "$first" | grep -qE '^[a-z0-9][a-z0-9._/-]*(\([^)]+\))?!?: .+' \
+  || block "not conventional <scope>: <subject>"
+
+subject="$(printf '%s' "$first" | sed 's/^[^:]*: *//')"
+printf '%s' "$subject" | grep -qiE '^(wip|stuff|fix(es)?|misc|update(s)?|change(s)?|tmp|asdf|foo)\.?$' \
+  && block "opaque subject '$subject'"
+
+exit 0

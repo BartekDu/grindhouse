@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# selftest — the law, proven. No network, no Claude auth, no quota spend:
+# quota-gate is exercised through a FAKED .quota-cache.json (the rate-limited
+# cache path) and the PAUSE/STOP sentinels, never a live /usage poll.
+#
+# Runs the WHOLE guardrail matrix in throwaway git repos under mktemp, with the
+# checkout-under-test VENDORED into the temp repo (repo-local scripts/grind wins
+# in grind-bootstrap, so the hooks exercise THIS checkout's code, not whatever
+# is installed in ~/.claude). Safe to run anywhere, including CI (ubuntu +
+# windows git-bash).
+#
+# Usage:  bash scripts/grind/selftest        exit 0 = all green, 1 = failures
+set -o pipefail
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYBIN="$(command -v python3 || command -v python)"
+
+PASS=0; FAIL=0
+ok()   { PASS=$((PASS+1)); echo "  ok  - $1"; }
+bad()  { FAIL=$((FAIL+1)); echo "  FAIL- $1"; }
+# expect_rc NAME WANT_RC CMD...
+expect_rc() {
+  local name="$1" want="$2"; shift 2
+  "$@" >/dev/null 2>&1; local got=$?
+  [ "$got" = "$want" ] && ok "$name (rc=$got)" || bad "$name (want rc=$want got rc=$got)"
+}
+
+TMP="$(mktemp -d)"
+trap 'cd /; rm -rf "$TMP"' EXIT
+
+new_repo() {  # new_repo DIR  -> fresh main-branch repo with the law vendored in
+  local d="$1"
+  mkdir -p "$d" && cd "$d" || return 1
+  git init -q -b main 2>/dev/null || { git init -q && git checkout -qb main; }
+  git config user.email selftest@grindhouse && git config user.name selftest
+  git config commit.gpgsign false
+  mkdir -p src/api infra scripts/grind
+  cp -f "$SRC"/* scripts/grind/ 2>/dev/null
+  echo x > src/api/a.txt && echo y > infra/i.txt
+  git add -A && git commit -qm "init: selftest seed"
+}
+
+echo "== selftest: $SRC (python: $PYBIN)"
+
+# ---------- 1. bootstrap: arms all three hooks, resolves repo-local ----------
+new_repo "$TMP/r1"
+source scripts/grind/grind-bootstrap.sh >/dev/null 2>&1
+[ "$GRIND_BOOTSTRAP_STATUS" = "OK" ] && ok "bootstrap OK status" || bad "bootstrap status=$GRIND_BOOTSTRAP_STATUS"
+hooks_ok=1
+for h in pre-commit pre-push commit-msg; do
+  grep -q 'GRIND HOOK' "$(git rev-parse --git-path hooks)/$h" 2>/dev/null || hooks_ok=0
+done
+[ "$hooks_ok" = "1" ] && ok "3 hooks armed (pre-commit, pre-push, commit-msg)" || bad "hook(s) missing"
+# path-spelling-agnostic compare: git-bash reports C:/-style toplevels while
+# mktemp speaks /tmp-style, and /tmp is a MOUNT of C:/Users/<u>/AppData/Local/Temp
+# — two spellings of one dir that no string canonicalization unifies. Anchor on
+# mktemp's unique random dirname instead: identical in every spelling.
+case "$G" in
+  *"${TMP##*/}/r1/scripts/grind") ok "G resolves repo-local (vendored copy wins)";;
+  *) bad "G=$G (want .../${TMP##*/}/r1/scripts/grind)";;
+esac
+
+# ---------- 2. bootstrap: foreign hook -> conflict, non-zero ----------
+new_repo "$TMP/r2"
+printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+source scripts/grind/grind-bootstrap.sh >/dev/null 2>&1
+rc=$?
+{ [ "$rc" != "0" ] && [ "${GRIND_BOOTSTRAP_STATUS#HOOK_CONFLICT}" != "$GRIND_BOOTSTRAP_STATUS" ]; } \
+  && ok "foreign hook -> HOOK_CONFLICT rc=$rc" || bad "foreign hook: rc=$rc status=$GRIND_BOOTSTRAP_STATUS"
+grep -q 'echo mine' .git/hooks/pre-commit && ok "foreign hook NOT clobbered" || bad "foreign hook clobbered"
+# all-or-nothing: the conflict must abort the WHOLE install, not arm the other two
+{ [ ! -e .git/hooks/pre-push ] && [ ! -e .git/hooks/commit-msg ]; } \
+  && ok "conflict installs NOTHING (all-or-nothing)" || bad "conflict left a partial install"
+
+# ---------- 2b. bootstrap: legacy v1 hook upgraded in place ----------
+new_repo "$TMP/r2b"
+printf '#!/usr/bin/env bash\n# !!! GRIND HOOK !!!  (installed by grind-bootstrap.sh; safe to delete to disarm)\nexec bash "/old/absolute/path/scope-guard" "$@"\n' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+source scripts/grind/grind-bootstrap.sh >/dev/null 2>&1
+[ "$GRIND_BOOTSTRAP_STATUS" = "OK" ] && grep -q 'GRIND HOOK v2' .git/hooks/pre-commit \
+  && ok "legacy v1 hook upgraded to v2 in place" || bad "v1->v2 upgrade failed (status=$GRIND_BOOTSTRAP_STATUS)"
+
+# ---------- 2c. hook wrapper: missing bundle -> fail-open, fail-closed in window ----------
+mkdir -p "$TMP/r2c" && cd "$TMP/r2c"
+git init -q -b main 2>/dev/null || { git init -q && git checkout -qb main; }
+git config user.email selftest@grindhouse && git config user.name selftest
+echo x > f && git add f && git commit -qm "init: seed"
+source "$SRC/grind-bootstrap.sh" >/dev/null 2>&1   # global-bundle path; repo has NO vendored copy
+HOME=/nonexistent-home bash .git/hooks/commit-msg /dev/null >/dev/null 2>&1
+[ $? = 0 ] && ok "missing bundle outside a window: fail-open (warn+skip)" || bad "missing bundle outside a window blocked the commit"
+mkdir -p .claude/grind && touch .claude/grind/.active
+HOME=/nonexistent-home bash .git/hooks/commit-msg /dev/null >/dev/null 2>&1
+[ $? = 1 ] && ok "missing bundle in an ACTIVE window: fail-closed" || bad "missing bundle in a window did NOT fail closed"
+rm -rf .claude/grind
+
+# ---------- 3. hygiene + lock (r1 from here on) ----------
+cd "$TMP/r1"; G="$TMP/r1/scripts/grind"
+GJ() { "$PYBIN" "$G/grindjson.py" "$@"; }
+bash "$G/hygiene-check" fix >/dev/null
+git add .gitignore && git commit -qm "chore: gitignore scratch noise"
+expect_rc "hygiene verify clean after fix+commit" 0 bash "$G/hygiene-check" verify
+# grind's own untracked bookkeeping must not block acquire
+mkdir -p .claude/grind && echo '{}' > .claude/grind/state.json
+expect_rc "lock acquire (grind bookkeeping untracked is exempt)" 0 bash "$G/lock.sh" acquire w1
+# the holder pid is a one-shot process; the single-run contract is age+release,
+# so a second acquire while the lock is FRESH must refuse (no pid-based steal)
+expect_rc "second acquire refused while held" 1 bash "$G/lock.sh" acquire w2
+
+# focus contract for the guard tests
+GJ set .claude/grind/state.json focus '{"label":"api","allowed_globs":["src/api/**"],"forbidden_globs":["infra/**"]}'
+
+# ---------- 4. quota-gate: every exit code via the cache, no live poll ----------
+GJ cache-write .claude/grind/.quota-cache.json 55 80 90
+expect_rc "quota-gate GO"                       0 bash "$G/quota-gate.sh"
+GJ cache-write .claude/grind/.quota-cache.json 8 80 90
+expect_rc "quota-gate STOP_FLOOR"               2 bash "$G/quota-gate.sh"
+GJ cache-write .claude/grind/.quota-cache.json 55 5 90
+expect_rc "quota-gate STOP_WEEKLY (all-models)" 3 bash "$G/quota-gate.sh"
+GJ cache-write .claude/grind/.quota-cache.json 55 80 5
+expect_rc "quota-gate STOP_WEEKLY (per-model)"  3 bash "$G/quota-gate.sh"
+GJ cache-write .claude/grind/.quota-cache.json 13 80 90
+expect_rc "quota-gate NO_NEW_TASK (reserve)"    4 bash "$G/quota-gate.sh"
+GJ cache-write .claude/grind/.quota-cache.json 55 80 90
+touch .claude/grind/STOP
+expect_rc "quota-gate STOP_KILL"                5 bash "$G/quota-gate.sh"
+rm .claude/grind/STOP
+touch .claude/grind/PAUSE
+expect_rc "quota-gate SOFT_PAUSE"               7 bash "$G/quota-gate.sh"
+rm .claude/grind/PAUSE
+
+# ---------- 5. scope-guard ----------
+echo z >> src/api/a.txt && git add src/api/a.txt
+git commit -qm "api: in-focus change" && ok "scope: in-focus commit passes" || bad "scope: in-focus commit blocked"
+echo z >> infra/i.txt && git add infra/i.txt
+git commit -qm "infra: sneak" >/dev/null 2>&1 && bad "scope: forbidden path NOT blocked" || ok "scope: forbidden path blocked"
+git reset -q && git checkout -q infra/i.txt
+echo '# extra' >> .gitignore && git add .gitignore
+git commit -qm "chore: gitignore extra" >/dev/null 2>&1 && ok "scope: .gitignore allowed mid-window (hygiene can operate)" || bad "scope: .gitignore blocked mid-window"
+# worktree law: a builder branch commit from the shared checkout is refused
+git checkout -qb grind/feat/wt-law
+echo w >> src/api/a.txt && git add src/api/a.txt
+git commit -qm "api: from shared checkout" >/dev/null 2>&1 && bad "worktree law: shared-checkout commit NOT blocked" || ok "worktree law: builder branch outside worktree blocked"
+git reset -q && git checkout -q . && git checkout -q main
+
+# ---------- 5b. worktree ENFORCEMENT (state anchored at the main root) ----------
+# The other half of the worktree law: once builders ARE in worktrees, the focus
+# contract must still reach them (state.json/.active live at the main root).
+git worktree add -q .claude/worktrees/grind-feat-wt grind/feat/wt-law
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  echo sneak >> infra/i.txt && git add infra/i.txt
+  git commit -qm "infra: sneak from worktree" >/dev/null 2>&1
+) && bad "worktree: forbidden path NOT blocked inside a worktree" || ok "worktree: forbidden path blocked inside a worktree"
+( cd .claude/worktrees/grind-feat-wt && git reset -q && git checkout -q infra/i.txt )
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  echo m >> src/api/a.txt && git add src/api/a.txt
+  git commit -qm "wip" >/dev/null 2>&1
+) && bad "worktree: opaque message NOT blocked inside a worktree" || ok "worktree: opaque message blocked inside a worktree"
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  git commit -qm "api: real work from worktree" >/dev/null 2>&1
+) && ok "worktree: in-focus conventional commit passes" || bad "worktree: in-focus commit blocked"
+# semi-grind contract: RULEBOOK.md + register dir in allowed_globs -> consolidator can commit
+GJ set .claude/grind/state.json focus '{"label":"api+campaign","allowed_globs":["src/api/**","RULEBOOK.md","docs/consistency-x/**"],"forbidden_globs":["infra/**"]}'
+(
+  cd .claude/worktrees/grind-feat-wt || exit 9
+  echo rules > RULEBOOK.md && git add RULEBOOK.md
+  git commit -qm "docs: ratify RULE-001" >/dev/null 2>&1
+) && ok "worktree: RULEBOOK.md passes with the semi-grind Step-0 contract" || bad "worktree: RULEBOOK.md blocked despite contract"
+GJ set .claude/grind/state.json focus '{"label":"api","allowed_globs":["src/api/**"],"forbidden_globs":["infra/**"]}'
+git worktree remove --force .claude/worktrees/grind-feat-wt 2>/dev/null
+
+# ---------- 6. commit-msg-guard ----------
+echo m >> src/api/a.txt && git add src/api/a.txt
+git commit -qm "wip" >/dev/null 2>&1 && bad "msg: 'wip' NOT blocked" || ok "msg: 'wip' blocked"
+git commit -qm "api: fixes" >/dev/null 2>&1 && bad "msg: opaque subject NOT blocked" || ok "msg: opaque subject blocked"
+git commit -qm "api: add selftest marker" >/dev/null 2>&1 && ok "msg: conventional message passes" || bad "msg: conventional message blocked"
+
+# ---------- 7. value-gate (generic + project extra) ----------
+expect_rc "value: issue id (#12)"         0 bash "$G/value-gate" "closes #12"
+expect_rc "value: Jira-style (SEC-12)"    0 bash "$G/value-gate" "closes SEC-12"
+expect_rc "value: semi-grind id (CF-001)" 0 bash "$G/value-gate" "closes CF-001, lint -3"
+expect_rc "value: coverage delta"         0 bash "$G/value-gate" "coverage +4%"
+expect_rc "value: vibes rejected"         1 bash "$G/value-gate" "improves overall quality"
+GRIND_VALUE_EXTRA_RE='\bE[0-9]+\b' bash "$G/value-gate" "closes E7" >/dev/null 2>&1 \
+  && ok "value: GRIND_VALUE_EXTRA_RE honored" || bad "value: extra regex ignored"
+
+# ---------- 8. verify-run ----------
+printf 'true\n' > .claude/grind/verify-cmds
+expect_rc "verify-run: explicit gate green" 0 bash "$G/verify-run"
+printf 'false\n' > .claude/grind/verify-cmds
+expect_rc "verify-run: explicit gate red"   1 bash "$G/verify-run"
+rm .claude/grind/verify-cmds
+# temp repo has no package.json/pyproject/Cargo/go.mod/Makefile -> nothing detectable
+expect_rc "verify-run: no gates = UNVERIFIED (3)" 3 bash "$G/verify-run"
+
+# ---------- 9. landable-guard ----------
+git init -q --bare "$TMP/origin.git"
+git remote add origin "$TMP/origin.git"
+git push -q origin main 2>/dev/null && bad "landable: protected push NOT blocked" || ok "landable: push to protected main blocked"
+git push -q origin main:grind/feat/x 2>/dev/null && ok "landable: feature-branch push passes" || bad "landable: feature push blocked"
+printf -- '- [ ] G-01 | needs:decision | blocks: landing\n' >> .claude/grind/gate-ledger.md
+git push -q origin main:grind/feat/x2 2>/dev/null && bad "landable: open needs:decision gate NOT blocked" || ok "landable: open gate (needs:decision) blocks any push"
+printf '```text\n- [ ] G-99 | needs:example | fenced sample\n```\n' > .claude/grind/gate-ledger.md
+git push -q origin main:grind/feat/x3 2>/dev/null && ok "landable: fenced example row ignored" || bad "landable: fenced example false-blocks"
+rm .claude/grind/gate-ledger.md
+GRIND_PROTECTED_BRANCHES="release" git push -q origin main 2>/dev/null \
+  && ok "landable: GRIND_PROTECTED_BRANCHES override honored" || bad "landable: override ignored"
+# window-only: after the window ends, the founder's direct pushes are not grind's business
+bash "$G/lock.sh" release >/dev/null 2>&1
+git push -q origin main 2>/dev/null \
+  && ok "landable: protected push ALLOWED after the window (window-only policy)" || bad "landable: protected push still blocked after the window"
+# ...but an open gate keeps the branch non-landable even post-window (self-quenching)
+printf -- '- [ ] G-02 | needs:check | blocks: x\n' >> .claude/grind/gate-ledger.md
+git push -q origin main:grind/feat/x4 2>/dev/null && bad "landable: post-window open gate NOT blocking" || ok "landable: open gate still blocks after the window"
+rm .claude/grind/gate-ledger.md
+expect_rc "lock re-acquire after release" 0 bash "$G/lock.sh" acquire w1b
+
+# ---------- 10. cost-table ----------
+[ "$(bash "$G/cost-table" p90 doc)" = "6" ] && ok "cost: conservative default (doc=6)" || bad "cost: default wrong"
+bash "$G/cost-table" record test-add 7 >/dev/null; bash "$G/cost-table" record test-add 9 >/dev/null; bash "$G/cost-table" record test-add 11 >/dev/null
+[ "$(bash "$G/cost-table" p90 test-add)" = "11" ] && ok "cost: p90 of [7,9,11] = 11" || bad "cost: p90 wrong"
+
+# ---------- 10b. audit: concurrent appends keep one chain (flock) ----------
+# Builders in worktrees share the main-root audit log; racing read+append used
+# to fork the chain (looks like tampering). Skipped where fcntl is unavailable.
+if "$PYBIN" -c 'import fcntl' 2>/dev/null; then
+  for i in 1 2 3 4 5 6 7 8; do GJ audit-append .claude/grind/audit.log race_test "worker=$i" & done
+  wait
+  bash "$G/audit-verify" >/dev/null 2>&1 \
+    && ok "audit: 8 concurrent appends, chain intact (flock)" || bad "audit: concurrent appends forked the chain"
+else
+  echo "  skip- audit concurrency (no fcntl on this platform)"
+fi
+
+# ---------- 11. audit chain: intact, then tamper detected ----------
+expect_rc "audit: chain intact" 0 bash "$G/audit-verify"
+"$PYBIN" - <<'PY'
+import json
+p = ".claude/grind/audit.log"
+lines = open(p, encoding="utf-8").read().splitlines()
+o = json.loads(lines[1]); o["data"] = o.get("data", "") + "X"
+lines[1] = json.dumps(o)
+open(p, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
+PY
+expect_rc "audit: tamper detected" 1 bash "$G/audit-verify"
+
+# ---------- 12. base-branch resolution ----------
+b="$(bash -c ". '$G/config.sh'; . '$G/lib.sh'; grind_base_branch")"
+[ "$b" = "main" ] && ok "base branch: autodetected main" || bad "base branch: got '$b'"
+b="$(GRIND_BASE_BRANCH=release bash -c ". '$G/config.sh'; . '$G/lib.sh'; grind_base_branch")"
+[ "$b" = "release" ] && ok "base branch: env/project.conf override" || bad "base branch override: got '$b'"
+
+# ---------- 13. quota tool resolution + per-OS pythons ----------
+tool="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
+case "$tool" in
+  */.claude/skills/quota/claude_usage.py) ok "quota tool: resolves to a skill path (no machine hardcode)";;
+  *) bad "quota tool: unexpected default '$tool'";;
+esac
+mkdir -p .claude/skills/quota && : > .claude/skills/quota/claude_usage.py
+tool="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
+[ "$tool" = "$TMP/r1/.claude/skills/quota/claude_usage.py" ] \
+  && ok "quota tool: repo-vendored copy wins" || bad "quota tool: vendored copy ignored ($tool)"
+rm -rf .claude/skills
+tool="$(GRIND_QUOTA_TOOL=/custom/path.py bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
+[ "$tool" = "/custom/path.py" ] && ok "quota tool: env override honored" || bad "quota tool: env override ignored"
+py="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_PYTHON\"")"
+command -v "$py" >/dev/null 2>&1 && ok "GRIND_PYTHON resolves to a real interpreter ($py)" || bad "GRIND_PYTHON '$py' not on PATH"
+
+# ---------- 14. /usage parser: per-model weekly bar (no pyte, no session) ----------
+CU=""
+for c in "$SRC/../../skills/quota/claude_usage.py" "$SRC/../../../quota/claude_usage.py"; do
+  [ -f "$c" ] && CU="$c" && break
+done
+if [ -n "$CU" ]; then
+  if "$PYBIN" - "$CU" <<'PY' >/dev/null 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cu", sys.argv[1])
+cu = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cu)   # must import WITHOUT pyte (lazy backend import)
+lines = [
+    "Current session (5-hour limit)",
+    "|||||| 37% used",
+    "Resets 6pm (Europe/Warsaw)",
+    "",
+    "Current week (all models)",
+    "|| 12% used",
+    "Resets Jul 13, 6pm (Europe/Warsaw)",
+    "",
+    "Current week (Fable)",
+    "|||| 44% used",
+    "Resets Jul 13, 6pm (Europe/Warsaw)",
+]
+s = cu.parse(lines)
+assert s["five_hour"]["pct_used"] == 37, s
+assert s["five_hour"]["resets"] == "6pm", s
+assert s["week_all"]["pct_used"] == 12, s
+assert s["week_fable"]["pct_used"] == 44, s
+assert s["week_fable"]["resets"] == "Jul 13, 6pm", s
+PY
+  then ok "usage parser: 5h + all-models + per-model (Fable) bars parsed"
+  else bad "usage parser: synthetic panel failed to parse"
+  fi
+else
+  echo "  skip- usage parser (claude_usage.py not found next to the law)"
+fi
+
+bash "$G/lock.sh" release >/dev/null 2>&1
+
+echo "== selftest: $PASS passed, $FAIL failed"
+[ "$FAIL" = "0" ]

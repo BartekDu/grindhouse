@@ -1,0 +1,36 @@
+# law-selftest — prove scripts/grind/* on BOTH operating systems the team runs.
+#
+# Incident: the engine lived as two divergent per-machine forks (Windows +
+# Linux) with no shared proof; fixes landed on one side and silently regressed
+# or never reached the other. Every push/PR now runs the full guardrail matrix
+# (scripts/grind/selftest — throwaway repos, faked quota cache, zero network,
+# zero Claude auth, zero quota spend) on ubuntu + windows git-bash.
+#
+# windows-latest notes: `shell: bash` = git-bash (MSYS) — the same environment
+# the law runs in on the Windows machine; .gitattributes forces LF so the bash
+# scripts survive checkout; the flock concurrency check self-skips where fcntl
+# is unavailable and prints `skip-`.
+name: law-selftest
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: selftest-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the law selftest
+        shell: bash
+        run: bash scripts/grind/selftest

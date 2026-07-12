@@ -11,8 +11,9 @@ description: |
 # /quota — usage precaution for autonomous "go" runs
 
 Reads the REAL `/usage` numbers (there is no headless `/usage`; the tool drives
-the TUI through a pseudo-terminal — same `claude.exe`, same auth) and tells you
-whether to keep running the task chain or PAUSE.
+the TUI through a pseudo-terminal — same `claude` binary, same auth; stdlib
+`pty` on Linux/macOS, pywinpty/ConPTY on Windows) and tells you whether to keep
+running the task chain or PAUSE.
 
 ## Subcommands — dispatch on the argument FIRST
 
@@ -27,23 +28,27 @@ whether to keep running the task chain or PAUSE.
 **Auto-refresh:** every `log` / `plot` / `bars` invocation FIRST appends a fresh
 sample to the global CSV (one nested /usage read, ~13s) — unless the newest
 logged sample is < 5 min old, in which case it's skipped (no double-spend).
-The `ClaudeQuotaLog` scheduled task still logs every 30 min in the background;
-the skill and the task share the same CSV. Pass `--no-refresh` (or set
-`QUOTA_NO_REFRESH=1`) for an instant, read-only view of already-logged data.
+An OPTIONAL background logger (Linux: systemd user timer `claude-quota-log.timer`,
+units in `./systemd/`; Windows: the `ClaudeQuotaLog` scheduled task) can log
+every 30 min; the skill and the logger share the same CSV. Pass `--no-refresh`
+(or set `QUOTA_NO_REFRESH=1`) for an instant, read-only view of logged data.
 
 ```bash
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" rows        # /quota log  (last 20)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" rows 40     # /quota log 40
-python "C:/Users/b/.claude/skills/quota/plot_quota.py"             # /quota plot (block panels, last 10 days)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" --all       # /quota plot (full logged history)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" --days 30   # /quota plot (last 30 days)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" 48          # /quota plot (block panels, last 48 samples)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" bars        # /quota plot bars (emoji, last 16)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" bars 20     # /quota plot bars 20
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" weekly      # /quota plot weekly (cycle table + derivative panels)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" weekly table # /quota plot weekly (table only, no graphs)
-python "C:/Users/b/.claude/skills/quota/plot_quota.py" --no-refresh  # read-only, instant (no nested session)
+python3 ~/.claude/skills/quota/plot_quota.py rows        # /quota log  (last 20)
+python3 ~/.claude/skills/quota/plot_quota.py rows 40     # /quota log 40
+python3 ~/.claude/skills/quota/plot_quota.py             # /quota plot (block panels, last 10 days)
+python3 ~/.claude/skills/quota/plot_quota.py --all       # /quota plot (full logged history)
+python3 ~/.claude/skills/quota/plot_quota.py --days 30   # /quota plot (last 30 days)
+python3 ~/.claude/skills/quota/plot_quota.py 48          # /quota plot (block panels, last 48 samples)
+python3 ~/.claude/skills/quota/plot_quota.py bars        # /quota plot bars (emoji, last 16)
+python3 ~/.claude/skills/quota/plot_quota.py bars 20     # /quota plot bars 20
+python3 ~/.claude/skills/quota/plot_quota.py weekly      # /quota plot weekly (cycle table + derivative panels)
+python3 ~/.claude/skills/quota/plot_quota.py weekly table # /quota plot weekly (table only, no graphs)
+python3 ~/.claude/skills/quota/plot_quota.py --no-refresh  # read-only, instant (no nested session)
 ```
+
+(Windows git-bash: swap `python3` for `python`. If the repo vendors its own copy
+at `.claude/skills/quota/`, prefer that path.)
 
 **Color note:** the default block-panel chart reads in monochrome through chat
 (ANSI color only lights up cyan/magenta/red on a real terminal; reset markers
@@ -84,26 +89,23 @@ They also cache separately (`.claude/grind/.quota-cache.json` vs this skill's
 The gate reads `week_model_pct_left` too (since 2026-07-10; it was blind before
 and a Fable grind could exhaust the model week unseen).
 
-## Path coupling (!!! QUOTA TOOL PATH TRAP !!!)
+## Path model (the 4-place coupling is dead)
 
-`claude_usage.py` lives in FOUR coupled places — moving/renaming it is a
-4-place change or things silently break:
-
-1. `C:/Users/b/Desktop/CF_domains/claude_usage.py` — the LIVE copy everything
-   executes.
-2. `~/.claude/skills/quota/claude_usage.py` — version-controlled backup
-   (keep byte-identical; re-sync after edits).
-3. `scripts/grind/config.sh` → `GRIND_QUOTA_TOOL` hardcodes path 1 (a wrong
-   path fails the gate CLOSED — POLL_FAILED, no grind can start).
-4. The `ClaudeQuotaLog` Windows Scheduled Task (30-min background logger) also
-   invokes path 1.
+The copy in this repo (`skills/quota/claude_usage.py`) IS the executed tool:
+`install.sh` puts it at `~/.claude/skills/quota/claude_usage.py`, grind's
+`config.sh` auto-resolves `GRIND_QUOTA_TOOL` (repo-vendored
+`.claude/skills/quota/` copy at the main root wins, else the installed skill;
+env/project.conf override for anything else — a wrong path still fails the
+gate CLOSED: POLL_FAILED), and the background loggers invoke the installed
+copy via `log_quota.py`. One source, one install step, no desktop copies.
 
 ## Run
 ```bash
-python "C:/Users/b/Desktop/CF_domains/claude_usage.py" --json
+python3 ~/.claude/skills/quota/claude_usage.py --json    # Windows git-bash: python
 ```
 ~13s; spawns a short nested `claude` session (the only way — `/usage` has no
-headless output). Deps: `pywinpty` + `pyte`.
+headless output). Deps: `pyte` (all platforms; Linux/macOS use stdlib `pty`)
+plus `pywinpty` on Windows only.
 
 Parse `five_hour_pct_left`, `week_pct_left`, `week_model_pct_left`,
 `quota_tight`. If `quota_tight`, PAUSE + surface, e.g. `5h 18% left — paused
@@ -125,12 +127,19 @@ very differently from `week 3% left` (other models may still have plenty).
 - **Never** skip a REAL gate just because quota is fine.
 - **Never** fabricate numbers — if the panel won't parse, say so.
 - Thresholds live in the tool: `FIVE_H_PAUSE_PCT=20`, `WEEK_PAUSE_PCT=10`.
-- Tool: `C:/Users/b/Desktop/CF_domains/claude_usage.py`; deps `pywinpty`+`pyte`.
+- Tool: `~/.claude/skills/quota/claude_usage.py` (a repo may vendor its own
+  copy at `.claude/skills/quota/` — prefer that when present). Deps: `pyte`
+  (+ `pywinpty` on Windows only).
 - **`log` / `plot` subcommands auto-refresh** — they append one fresh sample
   (nested /usage read, ~13s) to `~/.claude/quota_log.csv` via `log_quota.py`,
   then plot. Skipped automatically when the newest sample is < 5 min old, so
   rapid re-invocations never double-spend. Dispatch on the arg before the
-  no-arg live path. The background logger is the `ClaudeQuotaLog` Windows task
-  (also `log_quota.py`, every 30 min).
+  no-arg live path. The optional background logger: Linux = the systemd user
+  timer `claude-quota-log.timer` (units in `./systemd/`; enable with
+  `cp systemd/claude-quota-log.* ~/.config/systemd/user/ &&
+  systemctl --user daemon-reload && systemctl --user enable --now
+  claude-quota-log.timer`), Windows = the `ClaudeQuotaLog` scheduled task.
+  Both run `log_quota.py` every 30 min; each sample is a small real quota
+  spend — leave it off unless the plots' history matters.
 - **Never run the no-arg live path AND a plot in the same turn** — the plot's
   auto-refresh already produced a fresh number; reuse it.

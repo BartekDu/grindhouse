@@ -1,21 +1,25 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Read Claude Code's REAL usage limits by driving the `/usage` TUI panel.
 
-There is no headless `/usage` (it's a TUI dialog; `-p "/usage"` just treats it as
-a chat prompt). So this spawns the same `claude.exe` on your PATH inside a
-pseudo-terminal (pywinpty / ConPTY), sends `/usage`, renders the panel with a
-terminal emulator (pyte), and parses the percentages. It uses the same auth/
-config as running `claude` in PowerShell (same binary, inherited environment).
+There is no headless `/usage` (it's a TUI dialog; `-p "/usage"` just treats it
+as a chat prompt). So this spawns the same `claude` binary on your PATH inside
+a pseudo-terminal, sends `/usage`, renders the panel with a terminal emulator
+(pyte), and parses the percentages. It uses the same auth/config as running
+`claude` in your shell (same binary, inherited environment).
 
-Output: JSON with the 5-hour + weekly + credit usage, the Warsaw off-hours flag,
-and a `quota_tight` / `proceed_autonomously` decision for the autonomy-gating
-rule (off-hours AND tight quota AND no real gate -> just proceed).
+PTY backend is picked per-OS:
+  - Linux/macOS: stdlib `pty` + `select` (no extra deps beyond pyte)
+  - Windows:     pywinpty / ConPTY (pip install pywinpty)
+
+Output: JSON with the 5-hour, weekly (all-models), per-model weekly
+("Current week (Fable)" etc. — a SEPARATE limit that usually exhausts first)
+and credit usage, plus a `quota_tight` decision for the autonomy-gating rule.
 
 Usage:
-    python claude_usage.py            # human-readable
-    python claude_usage.py --json     # machine-readable JSON only
+    python3 claude_usage.py            # human-readable
+    python3 claude_usage.py --json     # machine-readable JSON only
 
-Requires: pip install pywinpty pyte
+Requires: pip install pyte   (plus pywinpty on Windows only)
 """
 
 from __future__ import annotations
@@ -28,42 +32,99 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 
-import pyte
-from winpty import PtyProcess
-
 # Force UTF-8 stdout so the credits "€" + box chars survive on Windows, where
 # the default console/redirect codec is cp1252 and mangles them to mojibake.
+# (No-op on Linux, where UTF-8 is already the locale default.)
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
 ROWS, COLS = 64, 150
-BOOT_TIMEOUT = 30.0   # max wait for the TUI prompt (poll, not fixed sleep)
+BOOT_TIMEOUT = 30.0   # max wait for the TUI prompt (poll, not fixed sleep —
+                      # fixed 7s+6s sleeps broke on slow boots: the panel never
+                      # rendered inside the window and whole days of the log
+                      # turned into `could not parse` rows)
 PANEL_TIMEOUT = 25.0  # max wait for the /usage panel to render
 SETTLE = 1.2          # extra settle after the panel first appears
+SUBMIT_WAIT = 0.5     # gap between typing "/usage" and pressing Enter (paste-detect guard)
 PCT_RE = re.compile(r"(\d+)%\s*used")
-RESET_RE = re.compile(r"Resets\s+(.+?)\s*(?:\(Europe/Warsaw\))?\s*$")
+# The panel suffixes reset times with the local tz in parens, e.g. "(Europe/Warsaw)"
+# — strip whatever tz label appears so group(1) is just the clock time.
+RESET_RE = re.compile(r"Resets\s+(.+?)\s*(?:\([\w/+-]+\))?\s*$")
 
-# PAUSE thresholds (flat; no time/peak/weekend factor — founder is Pro/Max and
+# PAUSE thresholds (flat; no time/peak/weekend factor — the founder is Pro/Max and
 # Anthropic permanently removed peak hours for Pro/Max on 2026-05-06).
 FIVE_H_PAUSE_PCT = 20   # pause the chain when the 5h limit has <= this % left
 WEEK_PAUSE_PCT = 10     # pause the chain when the weekly limit has <= this % left
 
 
-def capture_usage_screen() -> list[str]:
-    """Drive the TUI. pywinpty read() blocks when the TUI is idle, so we read
-    on a daemon thread and POLL the rendered screen instead of fixed sleeps.
+def _drive(write_fn, screen) -> list[str]:
+    """Shared TUI-driving choreography, backend-agnostic. POLLS the rendered
+    screen instead of fixed sleeps.
 
-    Fixed sleeps (the old 7s+6s) broke whenever boot was slow (auto-update
-    check, cold start, busy machine): the panel never rendered inside the
-    window and whole days of the log turned into `could not parse` rows.
-    Now we wait until the input prompt is actually up (max BOOT_TIMEOUT),
-    send /usage, and wait until a `NN% used` bar actually renders (max
-    PANEL_TIMEOUT, with one resend halfway in case the keystrokes got eaten
-    during a redraw)."""
-    screen = pyte.Screen(COLS, ROWS)
-    stream = pyte.ByteStream(screen)
+    1. Wait for boot: the folder-trust dialog (fresh pty spawns get it even
+       when the interactive session is already trusted) is confirmed with
+       Enter; then poll for the input prompt, with a stable-screen fallback
+       (~2s unchanged non-empty screen = call it booted).
+    2. Type "/usage" ONE CHAR AT A TIME — writing the whole string at once
+       trips the TUI's paste detection and the submit gets swallowed. Enter
+       goes separately after SUBMIT_WAIT.
+    3. Poll until the panel shows a "% used" bar (network fetch can be slow),
+       resending /usage once halfway in case the keystrokes got eaten during
+       a redraw. SETTLE after the first bar so the rest of the panel renders.
+    """
+    def lines() -> list[str]:
+        return [ln.rstrip() for ln in screen.display]
+
+    def on_screen(*pats: str) -> bool:
+        return any(p in ln for ln in lines() for p in pats)
+
+    def send_usage() -> None:
+        for ch in b"/usage":
+            write_fn(bytes([ch]))
+            time.sleep(0.06)
+        time.sleep(SUBMIT_WAIT)
+        write_fn(b"\r")
+
+    deadline = time.time() + BOOT_TIMEOUT
+    prev = ""
+    stable = 0
+    while time.time() < deadline:
+        if on_screen("trust this folder", "Quick safety check"):
+            write_fn(b"\r")
+            time.sleep(3.0)
+            prev, stable = "", 0
+            continue
+        cur = "\n".join(lines())
+        if on_screen("? for shortcuts", "│ >", "❯"):
+            break
+        stable = stable + 1 if (cur == prev and cur.strip()) else 0
+        if stable >= 4:          # ~2s unchanged non-empty screen: call it booted
+            break
+        prev = cur
+        time.sleep(0.5)
+    time.sleep(0.5)
+
+    send_usage()
+    deadline = time.time() + PANEL_TIMEOUT
+    resent = False
+    while time.time() < deadline:
+        if any(PCT_RE.search(ln) for ln in lines()):
+            time.sleep(SETTLE)   # let the rest of the panel finish rendering
+            break
+        if not resent and time.time() > deadline - PANEL_TIMEOUT / 2:
+            send_usage()
+            resent = True
+        time.sleep(0.5)
+    return lines()
+
+
+def _capture_windows(screen, stream) -> list[str]:
+    """Windows backend: pywinpty / ConPTY. read() blocks when the TUI is idle,
+    so we read on a daemon thread and poll the rendered screen on a clock."""
+    from winpty import PtyProcess
+
     p = PtyProcess.spawn("claude", dimensions=(ROWS, COLS))
     stop = threading.Event()
 
@@ -77,47 +138,88 @@ def capture_usage_screen() -> list[str]:
                 stream.feed(data.encode("utf-8", "replace")
                             if isinstance(data, str) else data)
 
-    def text() -> str:
-        return "\n".join(screen.display)
-
     t = threading.Thread(target=reader, daemon=True)
     t.start()
     try:
-        # 1. wait for the input prompt (screen shows the shortcuts hint or the
-        #    bordered input box) — or the screen going stable as a fallback
-        deadline = time.time() + BOOT_TIMEOUT
-        prev = ""
-        stable = 0
-        while time.time() < deadline:
-            cur = text()
-            if "? for shortcuts" in cur or "│ >" in cur or "❯" in cur:
-                break
-            stable = stable + 1 if (cur == prev and cur.strip()) else 0
-            if stable >= 4:          # ~2s unchanged non-empty screen: call it booted
-                break
-            prev = cur
-            time.sleep(0.5)
-        time.sleep(0.5)
-
-        # 2. send /usage, poll for the panel; resend once halfway if nothing
-        p.write("/usage\r")          # written to the pty, so MSYS can't mangle the /
-        deadline = time.time() + PANEL_TIMEOUT
-        resent = False
-        while time.time() < deadline:
-            if PCT_RE.search(text()):
-                time.sleep(SETTLE)   # let the rest of the panel finish rendering
-                break
-            if not resent and time.time() > deadline - PANEL_TIMEOUT / 2:
-                p.write("/usage\r")
-                resent = True
-            time.sleep(0.5)
-        return [ln.rstrip() for ln in screen.display]
+        return _drive(lambda b: p.write(b.decode("ascii")), screen)
     finally:
         stop.set()
         try:
             p.terminate(force=True)
         except Exception:
             pass
+
+
+def _capture_posix(screen, stream) -> list[str]:
+    """Linux/macOS backend: stdlib pty + select. Spawns `claude` on a real
+    pseudo-terminal sized ROWSxCOLS and feeds its output into pyte."""
+    import fcntl
+    import pty
+    import select
+    import signal
+    import struct
+    import subprocess
+    import termios
+
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+    env = dict(os.environ, TERM="xterm-256color")
+    proc = subprocess.Popen(
+        ["claude"], stdin=slave, stdout=slave, stderr=slave,
+        env=env, start_new_session=True, close_fds=True,
+    )
+    os.close(slave)
+    stop = threading.Event()
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                r, _, _ = select.select([master], [], [], 0.2)
+            except OSError:
+                break
+            if master not in r:
+                continue
+            try:
+                data = os.read(master, 8192)
+            except OSError:
+                break
+            if not data:
+                break
+            stream.feed(data)
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    try:
+        return _drive(lambda b: os.write(master, b), screen)
+    finally:
+        stop.set()
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+        try:
+            os.close(master)
+        except OSError:
+            pass
+
+
+def capture_usage_screen() -> list[str]:
+    # pyte is imported lazily so parse()/classify() stay importable without it
+    # (the selftest exercises the parser on CI runners that have no pyte).
+    import pyte
+
+    screen = pyte.Screen(COLS, ROWS)
+    stream = pyte.ByteStream(screen)
+    if os.name == "nt":
+        return _capture_windows(screen, stream)
+    return _capture_posix(screen, stream)
 
 
 def classify(label: str) -> str | None:

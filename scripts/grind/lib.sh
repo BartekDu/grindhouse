@@ -29,3 +29,19 @@ grind_runlog() { printf -- '- **%s** — %s\n' "$(grind_now_iso)" "$*" >> "$GRIN
 
 grind_killed() { [ -f "$GRIND_STOP" ]; }     # kill switch present?
 grind_active() { [ -f "$GRIND_ACTIVE" ]; }   # a window currently running?
+
+# Base branch resolution (campaign branches are cut from + PR'd back to this).
+# Order: explicit override (project.conf / env) > origin/HEAD > first existing
+# of dev|main|master > current branch. Never guess a branch that doesn't exist.
+# (Incident: the branch model hardcoded `dev`; repos whose base is main/master
+# cut campaigns from a branch that didn't exist.)
+grind_base_branch() {
+  if [ -n "${GRIND_BASE_BRANCH:-}" ]; then printf '%s\n' "$GRIND_BASE_BRANCH"; return; fi
+  local b
+  b="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+  if [ -n "$b" ]; then printf '%s\n' "${b#origin/}"; return; fi
+  for b in dev main master; do
+    if git show-ref --verify --quiet "refs/heads/$b"; then printf '%s\n' "$b"; return; fi
+  done
+  git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main
+}

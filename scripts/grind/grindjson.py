@@ -129,19 +129,25 @@ def main(argv):
         )
 
     elif cmd == "audit-append":
+        # One hash chain is shared by the orchestrator AND concurrent builder
+        # worktrees (state anchors at the main root), so read-last + append must
+        # be atomic — two unlocked appends reading the same `prev` fork the
+        # chain and audit-verify reports it as tampering. flock is advisory but
+        # every writer goes through here. (No fcntl on Windows → best effort.)
         p, event = argv[1], argv[2]
         data = argv[3] if len(argv) > 3 else ""
-        prev = "GENESIS"
         try:
-            with open(p, encoding="utf-8") as f:
-                lines = [ln for ln in f if ln.strip()]
-            if lines:
-                prev = json.loads(lines[-1]).get("hash", "GENESIS")
-        except FileNotFoundError:
-            pass
-        ts = _iso()
-        h = hashlib.sha256(f"{prev}{ts}{event}{data}".encode()).hexdigest()
-        with open(p, "a", encoding="utf-8", newline="\n") as f:
+            import fcntl
+        except ImportError:
+            fcntl = None
+        with open(p, "a+", encoding="utf-8", newline="\n") as f:
+            if fcntl:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            lines = [ln for ln in f if ln.strip()]
+            prev = json.loads(lines[-1]).get("hash", "GENESIS") if lines else "GENESIS"
+            ts = _iso()
+            h = hashlib.sha256(f"{prev}{ts}{event}{data}".encode()).hexdigest()
             f.write(
                 json.dumps({"ts": ts, "event": event, "data": data, "prev": prev, "hash": h}) + "\n"
             )
