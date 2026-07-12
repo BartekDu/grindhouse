@@ -12,7 +12,14 @@
 # Usage:  bash scripts/grind/selftest        exit 0 = all green, 1 = failures
 set -o pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYBIN="$(command -v python3 || command -v python)"
+# Pick the first python that actually EXECUTES code — `command -v python3` alone
+# false-hits the Windows Store alias stub (prints an install prompt, runs nothing),
+# which poisons every PYBIN-dependent check (the two-python trap, config.sh docs it).
+PYBIN=""
+for _c in python3 python; do
+  if "$_c" -c "import sys" >/dev/null 2>&1; then PYBIN="$_c"; break; fi
+done
+[ -n "$PYBIN" ] || { echo "selftest: no working python found" >&2; exit 1; }
 
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok  - $1"; }
