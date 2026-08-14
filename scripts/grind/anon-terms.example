@@ -1,0 +1,30 @@
+# anon-terms — the denylist anon-guard scans outgoing contributions for.
+#
+# !!! GRIND ANON TRAP !!! — COPY THIS, NEVER FILL IT IN HERE.
+# The filled-in list IS the confidential part (it enumerates your clients). It
+# is machine-local and must never be committed:
+#
+#     cp scripts/grind/anon-terms.example ~/.claude/grindhouse.anon-terms
+#     # then add your real terms to the COPY
+#
+# One extended regex per line, matched case-insensitively against ADDED lines
+# only. `#` starts a comment. Keep entries tight enough not to false-positive on
+# ordinary English (a client called "Core" would flag every third line).
+#
+# What belongs here:
+#   - client and product names (incl. common misspellings / internal codenames)
+#   - your employer + its domains
+#   - private repo names, internal org names, ticket-tracker project prefixes
+#   - teammates' names and handles
+#
+# Built-in patterns are ALWAYS on and need no entry here: e-mail addresses,
+# absolute user paths, credentials/tokens, private IP ranges, and the usual
+# internal-only hostname suffixes. See the pattern list in anon-guard itself.
+
+# --- examples (delete these; they match nothing real) ---
+# acme-?corp
+# \bWidgetCo\b
+# projectbluebird
+# \bPROJ-[0-9]+\b
+# yourcompany\.(com|io)
+# github\.com/your-org/

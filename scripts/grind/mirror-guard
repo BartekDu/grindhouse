@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# !!! GRIND MIRROR TRAP !!! — the live install is a MIRROR, never a workspace.
+# Edits made in ~/.claude/skills are destroyed by the next install.sh and never
+# reach a PR. Edit the canonical clone; ship it with `contribute`. See
+# docs/contribution-law.md (cited from README "Sync model").
+#
+# mirror-guard — enforcement for the contribution law.
+#
+# Incident (2026-08-14): grindhouse installs one-way (repo -> ~/.claude/skills)
+# and nothing looked the other way. A session that improved a SKILL.md, a law
+# script, or a selftest CASE inside the live install produced work that was
+# (a) invisible to the canonical repo, (b) silently clobbered by the next
+# `install.sh`, and (c) never shared with the team as a PR. One-way sync with
+# no back-pressure is a work shredder.
+#
+# Usage:
+#   mirror-guard check           0 = in sync; 1 = work STRANDED in the mirror;
+#                                3 = clone merely ahead (run install.sh); 2 = setup error
+#   mirror-guard import [--force]  copy stranded mirror files BACK into the clone;
+#                                refuses to clobber a NEWER clone file unless --force
+#   mirror-guard owns PATH       0 = PATH is inside a grindhouse-owned mirror dir
+#   mirror-guard root            print the resolved canonical clone
+#
+# Resolution (no machine hardcode — same law as GRIND_QUOTA_TOOL):
+#   GRINDHOUSE_ROOT env  >  ~/.claude/grindhouse.conf  >  the checkout this
+#   script is running from (when it looks like the grindhouse repo).
+set -o pipefail
+
+MG_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEST="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+CONF="${GRINDHOUSE_CONF:-$HOME/.claude/grindhouse.conf}"
+
+mg_die() { echo "mirror-guard: $*" >&2; exit 2; }
+
+# --- resolve the canonical clone ------------------------------------------
+mg_looks_canonical() { [ -f "$1/install.sh" ] && [ -d "$1/skills" ] && [ -d "$1/scripts/grind" ]; }
+
+mg_resolve_root() {
+  if [ -n "${GRINDHOUSE_ROOT:-}" ]; then printf '%s\n' "$GRINDHOUSE_ROOT"; return 0; fi
+  if [ -f "$CONF" ]; then
+    # shellcheck disable=SC1090
+    . "$CONF" 2>/dev/null
+    [ -n "${GRINDHOUSE_ROOT:-}" ] && { printf '%s\n' "$GRINDHOUSE_ROOT"; return 0; }
+  fi
+  # running from inside the canonical checkout? (scripts/grind/<this file>)
+  local up; up="$(cd "$MG_SELF/../.." 2>/dev/null && pwd)"
+  if [ -n "$up" ] && mg_looks_canonical "$up"; then printf '%s\n' "$up"; return 0; fi
+  return 1
+}
+
+ROOT="$(mg_resolve_root)" || mg_die "canonical clone not found. Set GRINDHOUSE_ROOT, or write it to $CONF (install.sh does this)."
+mg_looks_canonical "$ROOT" || mg_die "GRINDHOUSE_ROOT=$ROOT does not look like the grindhouse repo (want install.sh + skills/ + scripts/grind/)."
+
+# --- the owned surface -----------------------------------------------------
+# Every skill dir that exists in BOTH canonical and mirror, plus the law bundle
+# (canonical scripts/grind  <->  mirror grind/scripts/grind). `scripts` is
+# excluded from the grind skill compare because it exists ONLY in the mirror.
+mg_skills() { ls "$ROOT/skills" 2>/dev/null; }
+
+# mg_pairs -> "CANONICAL<TAB>MIRROR<TAB>EXTRA_EXCLUDE" per installed skill + the law
+mg_pairs() {
+  local s
+  for s in $(mg_skills); do
+    [ -d "$DEST/$s" ] || continue
+    if [ "$s" = "grind" ]; then printf '%s\t%s\t%s\n' "$ROOT/skills/$s" "$DEST/$s" "scripts"
+    else printf '%s\t%s\t%s\n' "$ROOT/skills/$s" "$DEST/$s" ""; fi
+  done
+  [ -d "$DEST/grind/scripts/grind" ] && printf '%s\t%s\t%s\n' "$ROOT/scripts/grind" "$DEST/grind/scripts/grind" ""
+  return 0
+}
+
+# relative file list under a dir, minus generated noise and the mirror-only subdir
+mg_walk() {
+  local d="$1" x="$2"
+  [ -d "$d" ] || return 0
+  ( cd "$d" 2>/dev/null || exit 0
+    find . -type f 2>/dev/null | sed 's|^\./||' \
+      | grep -v '__pycache__/' | grep -v '\.pyc$' | grep -v '^\.DS_Store$' \
+      | { if [ -n "$x" ]; then grep -v "^$x/"; else cat; fi; } \
+      | sort ) 2>/dev/null || true
+}
+
+# --- check -----------------------------------------------------------------
+# !!! GRIND DRIFT DIRECTION TRAP !!! — "the two sides differ" is NOT one state.
+# Found while dogfooding this guard: a clone that is simply AHEAD of the mirror
+# (the normal state while developing) looked identical to stranded mirror work,
+# and the advertised remedy — `import` — would have copied the OLDER mirror over
+# the NEWER clone edits. A shredder inside the anti-shredder. So every differing
+# file is classified by mtime (bash -nt, portable; no stat(1) dialects):
+#   mirror newer / mirror-only  -> STRANDED work   -> exit 1, import it
+#   clone  newer / clone-only   -> merely STALE    -> exit 3, install.sh
+# Stranded wins when both appear: unshared work is the expensive failure.
+mg_check() {
+  local can mir extra f stranded=0 stale=0
+  while IFS=$'\t' read -r can mir extra; do
+    [ -n "$can" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if [ ! -e "$can/$f" ]; then
+        echo "  STRANDED (mirror-only)  $f"; stranded=1
+      elif ! cmp -s "$can/$f" "$mir/$f"; then
+        if [ "$mir/$f" -nt "$can/$f" ]; then echo "  STRANDED (mirror newer) $f"; stranded=1
+        else                                 echo "  stale    (clone newer)  $f"; stale=1; fi
+      fi
+    done < <(mg_walk "$mir" "$extra")
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      [ -e "$mir/$f" ] || { echo "  stale    (clone-only)   $f"; stale=1; }
+    done < <(mg_walk "$can" "")
+  done < <(mg_pairs)
+
+  if [ "$stranded" = "1" ]; then
+    cat >&2 <<EOF
+
+mirror-guard: UNSHARED WORK is stranded in the live install.
+  canonical : $ROOT
+  mirror    : $DEST
+The next install.sh will destroy it. Rescue it into the clone first:
+    bash "$ROOT/scripts/grind/mirror-guard" import
+then ship it:
+    bash "$ROOT/scripts/grind/contribute" -m "feat(skill): ..." <branch>
+EOF
+    return 1
+  fi
+  if [ "$stale" = "1" ]; then
+    echo "mirror-guard: clone is AHEAD of the live install (nothing stranded)."
+    echo "  re-sync when convenient:  bash \"$ROOT/install.sh\""
+    return 3
+  fi
+  echo "mirror-guard: clean — live install matches $ROOT"
+  return 0
+}
+
+# --- import (rescue mirror-side edits back into the clone) -----------------
+# Refuses to overwrite a clone file that is NEWER than its mirror twin, for the
+# direction trap above: import exists to rescue work, never to destroy it.
+mg_import() {
+  local can mir extra f n=0 skipped=0 force=0
+  [ "${1:-}" = "--force" ] && force=1
+  while IFS=$'\t' read -r can mir extra; do
+    [ -n "$can" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if [ -e "$can/$f" ] && cmp -s "$can/$f" "$mir/$f"; then continue; fi
+      if [ "$force" = "0" ] && [ -e "$can/$f" ] && [ "$can/$f" -nt "$mir/$f" ]; then
+        echo "  SKIP (clone is newer) $f"; skipped=$((skipped+1)); continue
+      fi
+      mkdir -p "$(dirname "$can/$f")"
+      cp -f "$mir/$f" "$can/$f" && { echo "  imported $f"; n=$((n+1)); }
+    done < <(mg_walk "$mir" "$extra")
+  done < <(mg_pairs)
+  echo "mirror-guard: imported $n file(s) mirror -> $ROOT${skipped:+, skipped $skipped newer clone file(s)}"
+  [ "$skipped" -gt 0 ] && echo "  (re-run with --force to overwrite them — this DISCARDS the clone's newer version)"
+  [ "$n" -gt 0 ] && echo "Review, then ship it:  bash \"$ROOT/scripts/grind/contribute\" -m \"...\" <branch>"
+  ( cd "$ROOT" && git status --short ) 2>/dev/null
+  return 0
+}
+
+# --- owns PATH (the PreToolUse hook's decision) ----------------------------
+# Path-spelling-agnostic: git-bash says /c/Users/..., the hook payload says
+# C:\Users\... — two spellings of one dir that no string canonicalization
+# unifies (same trap the selftest documents). Anchor on the last two components
+# of DEST (".claude/skills") + the skill name, lowercased, slashes normalized.
+mg_norm() { printf '%s' "$1" | tr '\\' '/' | tr 'A-Z' 'a-z'; }
+
+mg_owns() {
+  local p="${1:-}"; [ -n "$p" ] || return 1
+  local np dn marker s
+  np="$(mg_norm "$p")"
+  dn="$(mg_norm "$DEST")"; dn="${dn%/}"
+  marker="$(basename "$(dirname "$dn")")/$(basename "$dn")"
+  for s in $(mg_skills); do
+    s="$(mg_norm "$s")"
+    case "$np/" in
+      *"/$marker/$s/"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+case "${1:-check}" in
+  check)  mg_check ;;
+  import) mg_import "${2:-}" ;;
+  owns)   mg_owns "${2:-}" ;;
+  root)   printf '%s\n' "$ROOT" ;;
+  *)      mg_die "unknown subcommand '${1}' (check|import|owns|root)" ;;
+esac

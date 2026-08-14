@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# !!! GRIND ANON TRAP !!! — the licence obligation is to contribute back
+# ANONYMIZED improvements. Client names, machine paths and secrets must never
+# ride along in a contribution diff. See docs/contribution-law.md.
+#
+# anon-guard — scan what a contribution ADDS for identifying material.
+#
+# Incident (2026-08-14): grindhouse is used commercially under a licence whose
+# consideration is contributing improvements back upstream, anonymized. The
+# engine's own history is full of client material (31 "Underline" / 6 "P.i.w.o"
+# references live in the tree today) — proof that identifying names leak into
+# this kind of prose by default, not by accident. Nothing checked outgoing work.
+#
+# Scans ADDED LINES ONLY (a `+` line in the outgoing diff), never the whole
+# tree: pre-existing client references in repo history are not this gate's
+# business, and scanning the tree would fail every PR forever.
+#
+# Usage:
+#   anon-guard [BASE]      scan added lines in BASE...HEAD (default: base branch)
+#   anon-guard --staged    scan added lines in the staged diff
+#   anon-guard --working   scan added lines in the working tree (unstaged+staged)
+# Exit: 0 clean, 1 identifying material found, 2 usage/setup error.
+#
+# Term list (client + project names) is MACHINE-LOCAL and must never be
+# committed — the denylist IS the confidential part. Order:
+#   GRIND_ANON_TERMS env  >  ~/.claude/grindhouse.anon-terms
+# One term per line; `#` comments; each line is an extended regex (case-insensitive).
+# Template: scripts/grind/anon-terms.example
+set -o pipefail
+
+AG_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TERMS="${GRIND_ANON_TERMS:-$HOME/.claude/grindhouse.anon-terms}"
+
+ag_die() { echo "anon-guard: $*" >&2; exit 2; }
+
+git rev-parse --git-dir >/dev/null 2>&1 || ag_die "not inside a git repo"
+
+# --- pick the diff ---------------------------------------------------------
+MODE="range"; BASE=""
+case "${1:-}" in
+  --staged)  MODE="staged" ;;
+  --working) MODE="working" ;;
+  "")        MODE="range" ;;
+  -*)        ag_die "unknown flag '$1' (--staged|--working|BASE)" ;;
+  *)         MODE="range"; BASE="$1" ;;
+esac
+
+if [ "$MODE" = "range" ]; then
+  if [ -z "$BASE" ]; then
+    # same resolution the rest of the law uses (lib.sh grind_base_branch)
+    BASE="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"; BASE="${BASE#origin/}"
+    if [ -z "$BASE" ]; then
+      for b in dev main master; do
+        git show-ref --verify --quiet "refs/heads/$b" && { BASE="$b"; break; }
+      done
+    fi
+    [ -n "$BASE" ] || ag_die "cannot resolve a base branch; pass one explicitly"
+  fi
+  DIFF="$(git diff "$BASE"...HEAD 2>/dev/null)" || ag_die "git diff $BASE...HEAD failed"
+  WHAT="$BASE...HEAD"
+elif [ "$MODE" = "staged" ]; then
+  DIFF="$(git diff --cached)"; WHAT="staged"
+else
+  # !!! ANON UNTRACKED TRAP !!! — `git diff HEAD` does NOT show untracked files.
+  # A brand-new skill or law script is untracked until `git add`, so the dry run
+  # scanned NOTHING of the very work being contributed and reported green. A
+  # false green on a leak gate is worse than no gate. Untracked file contents
+  # are appended as synthetic `+` lines.
+  DIFF="$(git diff HEAD)"; WHAT="working tree (incl. untracked)"
+  while IFS= read -r uf; do
+    [ -f "$uf" ] || continue
+    grep -Iq . "$uf" 2>/dev/null || continue   # skip binaries
+    DIFF="$DIFF
+$(sed 's/^/+/' "$uf" 2>/dev/null)"
+  done < <(git ls-files --others --exclude-standard 2>/dev/null)
+fi
+
+# added lines only; drop the +++ file headers
+ADDED="$(printf '%s\n' "$DIFF" | grep '^+' | grep -v '^+++' | sed 's/^+//')"
+
+# !!! ANON-OK TRAP !!! — the escape hatch, deliberately loud.
+# Found while dogfooding this gate: anon-guard's OWN selftest cases have to
+# contain a fake token, a fake e-mail, a fake user path and a private IP, or
+# they would not be testing anything. A gate that cannot ship its own tests is
+# a gate nobody keeps. So a line carrying the literal marker ANON-OK is waived
+# — and the WAIVED COUNT is always printed, never silent, so review can grep
+# every waiver in a diff and challenge it. Use it for synthetic fixtures only.
+WAIVED="$(printf '%s\n' "$ADDED" | grep -c 'ANON-OK')"
+ADDED="$(printf '%s\n' "$ADDED" | grep -v 'ANON-OK')"
+
+# defined here, BEFORE the first exit path — a diff whose only additions are
+# waived lines leaves $ADDED empty and returns early, and that is exactly the
+# case where the count must still be printed
+waiver_note() {
+  local how
+  case "$MODE" in
+    staged)  how="git diff --cached" ;;
+    working) how="git diff HEAD" ;;
+    *)       how="git diff $BASE...HEAD" ;;
+  esac
+  [ "${WAIVED:-0}" -gt 0 ] && \
+    echo "anon-guard: $WAIVED line(s) waived via ANON-OK — review them: $how | grep ANON-OK"
+  return 0
+}
+
+if [ -z "$ADDED" ]; then
+  echo "anon-guard: nothing unwaived was added in $WHAT — clean"
+  waiver_note
+  exit 0
+fi
+
+HITS=0
+report() {  # report LABEL MATCHES
+  local label="$1" matches="$2"
+  [ -n "$matches" ] || return 0
+  HITS=1
+  echo "  LEAK [$label]" >&2
+  printf '%s\n' "$matches" | sed 's/^/        /' | head -20 >&2
+}
+
+# --- 1. machine-local denylist (client / project / product names) ----------
+if [ -f "$TERMS" ]; then
+  while IFS= read -r term; do
+    case "$term" in ''|'#'*) continue ;; esac
+    m="$(printf '%s\n' "$ADDED" | grep -Ein -- "$term" | head -5)"
+    report "term: $term" "$m"
+  done < "$TERMS"
+else
+  echo "anon-guard: WARNING — no term list at $TERMS" >&2
+  echo "            client/project names will NOT be caught. Seed it from" >&2
+  echo "            $AG_SELF/anon-terms.example" >&2
+fi
+
+# --- 2. built-in identifying patterns (always on) --------------------------
+# real e-mail addresses (skip obvious placeholders used by the law's own tests)
+m="$(printf '%s\n' "$ADDED" | grep -Ein '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
+      | grep -Eiv 'example\.(com|org)|@local\b|selftest@|noreply@|user@host' | head -5)"
+report "e-mail address" "$m"
+
+# Absolute home/user paths (machine fingerprints). The username component must
+# START with an alphanumeric: `[A-Za-z0-9._-]+` also matches the ellipsis in a
+# written-out placeholder like `/c/Users/...`, and this gate's own docs are full
+# of those — it flagged its own prose on the first real run.
+m="$(printf '%s\n' "$ADDED" | grep -Ein '([A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9][A-Za-z0-9._-]*|/c/Users/[A-Za-z0-9][A-Za-z0-9._-]*|/home/[A-Za-z0-9][A-Za-z0-9._-]*|/Users/[A-Za-z0-9][A-Za-z0-9._-]*)' \
+      | grep -Eiv '/home/runner|\$HOME|<user>|/Users/<' | head -5)"
+report "absolute user path" "$m"
+
+# credentials / tokens
+m="$(printf '%s\n' "$ADDED" | grep -Ein 'gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{12,}|xox[baprs]-[A-Za-z0-9-]{10,}|BEGIN [A-Z ]*PRIVATE KEY' | head -5)"
+report "credential/token" "$m"
+
+# private network fingerprints
+# the pattern line necessarily contains the strings it hunts for — waived, loudly
+m="$(printf '%s\n' "$ADDED" | grep -Ein '\b(10\.[0-9]+\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)\b|\.internal\b|\.corp\b|\.lan\b' | head -5)"  # ANON-OK
+report "internal host/IP" "$m"
+
+if [ "$HITS" = "0" ]; then
+  echo "anon-guard: clean — no identifying material added in $WHAT"
+  waiver_note
+  exit 0
+fi
+waiver_note
+
+cat >&2 <<EOF
+
+anon-guard: contribution is NOT anonymized ($WHAT).
+The licence obligation is to share improvements back WITHOUT client material.
+Generalize the finding before shipping: replace the client name with the shape
+of the problem ("a large Django product repo"), the path with \$HOME or a
+placeholder, the ticket id with the pattern it illustrates.
+Every rule still has to cite the incident that created it — cite it anonymously.
+EOF
+exit 1

@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# contribute — the only sanctioned way an improvement leaves this machine.
+#
+# Incident (2026-08-14): grindhouse is used commercially under a licence whose
+# consideration is contributing improvements back, anonymized. Two failure modes
+# stood between an improvement and that obligation, both silent:
+#   1. the work was done in the live install (~/.claude/skills) and was clobbered
+#      by the next install.sh before anyone could share it   -> mirror-guard
+#   2. the work carried client names / machine paths into the diff -> anon-guard
+# This script is the single gate that both run behind, so "share it as a PR"
+# is a command, not a habit anyone has to remember.
+#
+# Usage:
+#   contribute -m "feat(skill): ..." [BRANCH]
+#   contribute --check                 run every gate, change nothing (dry run)
+# Options:
+#   -m MSG      commit message (conventional; commit-msg-guard's rules apply)
+#   -b BASE     base branch for the PR       (default: origin/HEAD, else dev|main|master)
+#   -r REMOTE   remote to push + PR against  (default: $GRINDHOUSE_UPSTREAM, else origin)
+#   -n          no push (commit locally, print what would be pushed)
+# Exit: 0 shipped, 1 a gate refused, 2 usage/setup error.
+set -o pipefail
+
+C_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+c_die()  { echo "contribute: $*" >&2; exit 2; }
+c_stop() { echo "contribute: $*" >&2; exit 1; }
+c_step() { echo; echo "== $*"; }
+
+MSG=""; BASE=""; REMOTE="${GRINDHOUSE_UPSTREAM:-origin}"; PUSH=1; CHECK=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m) MSG="${2:-}"; shift 2 ;;
+    -b) BASE="${2:-}"; shift 2 ;;
+    -r) REMOTE="${2:-}"; shift 2 ;;
+    -n) PUSH=0; shift ;;
+    --check) CHECK=1; shift ;;
+    -*) c_die "unknown flag '$1'" ;;
+    *)  BRANCH="${BRANCH:-$1}"; shift ;;
+  esac
+done
+BRANCH="${BRANCH:-}"
+
+ROOT="$(bash "$C_SELF/mirror-guard" root)" || c_die "cannot resolve the canonical clone (see mirror-guard)"
+cd "$ROOT" || c_die "cannot cd $ROOT"
+
+# --- base + protected-branch law ------------------------------------------
+if [ -z "$BASE" ]; then
+  BASE="$(git symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null)"; BASE="${BASE#$REMOTE/}"
+  if [ -z "$BASE" ]; then
+    for b in dev main master; do git show-ref --verify --quiet "refs/heads/$b" && { BASE="$b"; break; }; done
+  fi
+  [ -n "$BASE" ] || c_die "cannot resolve a base branch; pass -b"
+fi
+CUR="$(git rev-parse --abbrev-ref HEAD)"
+
+# ---------- gate 1: the live install must not hold unshared work ----------
+c_step "gate 1/4  mirror (is anything stranded in ~/.claude/skills?)"
+bash "$C_SELF/mirror-guard" check; mg_rc=$?
+case "$mg_rc" in
+  0) ;;
+  3) echo "  (clone is ahead of the live install — fine, that is what we are shipping)" ;;
+  *) c_stop "unshared work is stranded in the live install — rescue it first: bash \"$C_SELF/mirror-guard\" import" ;;
+esac
+
+# ---------- branch ---------------------------------------------------------
+if [ "$CHECK" = "0" ]; then
+  if [ "$CUR" = "$BASE" ]; then
+    [ -n "$BRANCH" ] || c_die "on the base branch ($BASE) — pass a branch name: contribute -m \"...\" <branch>"
+    git switch -c "$BRANCH" 2>/dev/null || git checkout -qb "$BRANCH" || c_die "cannot create branch $BRANCH"
+    CUR="$BRANCH"
+    echo "  branched $BASE -> $CUR"
+  elif [ -n "$BRANCH" ] && [ "$BRANCH" != "$CUR" ]; then
+    c_die "already on '$CUR' but asked for '$BRANCH' — switch yourself or drop the argument"
+  else
+    echo "  contributing from existing branch $CUR"
+  fi
+  git add -A
+fi
+
+# ---------- gate 2: anonymization -----------------------------------------
+c_step "gate 2/4  anonymization (licence: improvements go back WITHOUT client material)"
+if [ "$CHECK" = "1" ]; then
+  bash "$C_SELF/anon-guard" --working || c_stop "anon-guard refused (dry run)"
+else
+  bash "$C_SELF/anon-guard" --staged || {
+    echo "contribute: nothing was committed; the staged diff is intact — generalize it and re-run." >&2
+    exit 1
+  }
+fi
+
+# ---------- gate 3: the law still proves itself ---------------------------
+c_step "gate 3/4  selftest (the law must be green before it ships)"
+bash "$C_SELF/selftest" >/dev/null 2>&1 \
+  && echo "  selftest: green" \
+  || c_stop "selftest RED — run: bash \"$C_SELF/selftest\""
+
+if [ "$CHECK" = "1" ]; then
+  c_step "dry run complete — every gate passed, nothing changed"
+  exit 0
+fi
+
+# ---------- commit ---------------------------------------------------------
+c_step "gate 4/4  commit + push"
+if git diff --cached --quiet; then
+  echo "  nothing staged — using the commits already on $CUR"
+else
+  [ -n "$MSG" ] || c_die "nothing committed yet and no -m MSG given"
+  git commit -qm "$MSG" || c_stop "commit refused (commit-msg-guard?)"
+  echo "  committed: $MSG"
+fi
+
+if git diff --quiet "$BASE".."$CUR" 2>/dev/null; then
+  c_stop "no difference from $BASE — nothing to contribute"
+fi
+
+if [ "$PUSH" = "0" ]; then
+  echo "  -n given: not pushing. Ready on branch $CUR:"
+  git --no-pager log --oneline "$BASE".."$CUR"
+  exit 0
+fi
+
+git push -u "$REMOTE" "$CUR" || c_stop "push to $REMOTE failed"
+
+# ---------- open the PR ----------------------------------------------------
+URL="$(git remote get-url "$REMOTE" 2>/dev/null)"
+SLUG="$(printf '%s' "$URL" | sed -E 's#^git@github\.com:#https://github.com/#; s#\.git$##')"
+if command -v gh >/dev/null 2>&1; then
+  gh pr create --repo "${SLUG#https://github.com/}" --base "$BASE" --head "$CUR" \
+     --title "${MSG:-$CUR}" --body "Contributed back per the licence. Anonymized (anon-guard) and law-green (selftest)." \
+     && exit 0
+  echo "contribute: gh pr create failed — open it by hand:" >&2
+fi
+echo
+echo "  pushed $CUR -> $REMOTE. gh is not installed, so open the PR here:"
+echo "    $SLUG/compare/$BASE...$CUR?expand=1"

@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 *.tmp
 .claude/worktrees/
+# !!! GRIND ANON TRAP !!! — a filled-in anon-guard denylist enumerates your
+# clients; committing it leaks exactly what the gate protects. The template
+# (scripts/grind/anon-terms.example) is tracked; nothing else may be.
+*.anon-terms
+anon-terms
+!scripts/grind/anon-terms.example

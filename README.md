@@ -21,7 +21,7 @@ supporting cast
 
 | Path | What |
 |---|---|
-| `scripts/grind/` | **The law.** quota-gate (floor/weekly/model-weekly/reserve/kill/PAUSE), scope-guard (focus globs + worktree law, pre-commit), landable-guard (pre-push), commit-msg-guard (commit-msg, conventional messages), value-gate, verify-run (per-repo `verify-cmds`, else auto-detected gates), lock, hygiene-check, cost-table, audit-verify (hash chain), swarm-claim (gh-issue ownership board), selftest (the whole matrix, no network/auth), grindjson.py, grind-bootstrap.sh |
+| `scripts/grind/` | **The law.** quota-gate (floor/weekly/model-weekly/reserve/kill/PAUSE), scope-guard (focus globs + worktree law, pre-commit), landable-guard (pre-push), commit-msg-guard (commit-msg, conventional messages), value-gate, verify-run (per-repo `verify-cmds`, else auto-detected gates), lock, hygiene-check, cost-table, audit-verify (hash chain), swarm-claim (gh-issue ownership board), selftest (the whole matrix, no network/auth), grindjson.py, grind-bootstrap.sh, **the contribution law**: mirror-guard + mirror-hook (live install is read-only), anon-guard (added-lines-only leak scan), contribute (the one command that ships an improvement as a PR) |
 | `skills/<name>/` | The seven skills (SKILL.md policy files + helpers; `skills/quota/` carries the `claude_usage.py` backup) |
 | `install.sh` | Sync this repo → `~/.claude/skills` (the live install) |
 
@@ -54,6 +54,14 @@ silently regress the other.
   `cp -f scripts/grind/* <repo>/scripts/grind/`, but NEVER copy
   `grind-bootstrap.sh` into a product repo (it is the global entrypoint that
   RESOLVES repo-local vs global; inside a repo it has no meaning).
+- **Back-pressure (the contribution law):** the sync is one-way, so the live
+  install is **read-only**. `mirror-hook` (a `PreToolUse` hook) denies edits
+  under `~/.claude/skills`; `mirror-guard check|import` detects and rescues
+  drift; `anon-guard` scans the outgoing diff's ADDED lines for client names,
+  machine paths and secrets; `contribute` runs all of it and opens the PR.
+  Commercial use of this engine is licensed against contributing improvements
+  back, anonymized — full rationale and the daily shape in
+  [`docs/contribution-law.md`](docs/contribution-law.md).
 - **Quota tool:** `skills/quota/claude_usage.py` IS the executed tool —
   `install.sh` ships it to `~/.claude/skills/quota/`, grind's `config.sh`
   auto-resolves `GRIND_QUOTA_TOOL` (repo-vendored copy wins, else the installed

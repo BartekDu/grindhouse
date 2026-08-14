@@ -312,6 +312,197 @@ else
   echo "  skip- usage parser (claude_usage.py not found next to the law)"
 fi
 
+# ---------- N. the contribution law: mirror-guard ----------
+# Fixture = a throwaway canonical clone + its mirror. NEVER touches the real
+# ~/.claude/skills: both sides come from env (GRINDHOUSE_ROOT/CLAUDE_SKILLS_DIR),
+# which is exactly the no-machine-hardcode contract the quota tool already has.
+MGF="$TMP/mg"
+mg_fixture() {
+  rm -rf "$MGF"
+  mkdir -p "$MGF/canon/skills/grind/references" "$MGF/canon/skills/culture" \
+           "$MGF/canon/scripts/grind" "$MGF/mirror/grind/scripts/grind" "$MGF/mirror/culture"
+  : > "$MGF/canon/install.sh"
+  echo "policy v1"  > "$MGF/canon/skills/grind/SKILL.md"
+  echo "staffing"   > "$MGF/canon/skills/grind/references/staffing.md"
+  echo "culture v1" > "$MGF/canon/skills/culture/SKILL.md"
+  echo "law v1"     > "$MGF/canon/scripts/grind/value-gate"
+  mkdir -p "$MGF/mirror/grind/references"
+  cp "$MGF/canon/skills/grind/SKILL.md" "$MGF/mirror/grind/"
+  cp "$MGF/canon/skills/grind/references/staffing.md" "$MGF/mirror/grind/references/"
+  cp "$MGF/canon/skills/culture/SKILL.md" "$MGF/mirror/culture/"
+  cp "$MGF/canon/scripts/grind/value-gate" "$MGF/mirror/grind/scripts/grind/"
+}
+mg() { env GRINDHOUSE_ROOT="$MGF/canon" CLAUDE_SKILLS_DIR="$MGF/mirror" \
+           GRINDHOUSE_CONF="$MGF/none.conf" bash "$SRC/mirror-guard" "$@"; }
+
+mg_fixture
+expect_rc "mirror: clean install matches canonical" 0 mg check
+# the mirror-only scripts/ dir must NOT read as drift (it exists by design)
+mg_fixture && echo "law v1" > "$MGF/mirror/grind/scripts/grind/value-gate"
+expect_rc "mirror: mirror-only scripts/ dir is not drift" 0 mg check
+# python bytecode in the mirror must not read as drift either
+mg_fixture && mkdir -p "$MGF/mirror/culture/__pycache__" && echo x > "$MGF/mirror/culture/__pycache__/a.pyc"
+expect_rc "mirror: __pycache__ ignored" 0 mg check
+
+# Direction matters (see the DRIFT DIRECTION TRAP in mirror-guard): the tests
+# stamp the OTHER side old with `touch -t` so "which is newer" never depends on
+# filesystem mtime resolution — two writes in one second are indistinguishable.
+OLD='200001010000'
+mg_fixture && echo "policy v2 (edited in the live install)" > "$MGF/mirror/grind/SKILL.md" \
+           && touch -t "$OLD" "$MGF/canon/skills/grind/SKILL.md"
+expect_rc "mirror: edited SKILL.md in the live install = STRANDED" 1 mg check
+# capture first: `mg check` exits non-zero on drift and `set -o pipefail` would
+# hand that to the whole pipeline, masking a successful grep
+mg_out="$(mg check 2>/dev/null)"
+case "$mg_out" in
+  *"STRANDED"*SKILL.md*) ok "mirror: report names the file AND the direction" ;;
+  *)                     bad "mirror: report does not name file+direction ($mg_out)" ;;
+esac
+# a new selftest CASE written in the mirror is the same class of stranded work
+mg_fixture && echo "law v2 + new case" > "$MGF/mirror/grind/scripts/grind/value-gate" \
+           && touch -t "$OLD" "$MGF/canon/scripts/grind/value-gate"
+expect_rc "mirror: law/selftest edit in the live install = STRANDED" 1 mg check
+# a file that exists ONLY in the mirror is unshared work too
+mg_fixture && echo "brand new" > "$MGF/mirror/culture/references/new.md" 2>/dev/null \
+           || { mkdir -p "$MGF/mirror/culture/references"; echo "brand new" > "$MGF/mirror/culture/references/new.md"; }
+expect_rc "mirror: mirror-only file = STRANDED" 1 mg check
+
+# the other direction: a clone that is merely AHEAD is NOT stranded work, and
+# must never be "fixed" by importing the older mirror over it
+mg_fixture && echo "policy v3 (edited in the clone)" > "$MGF/canon/skills/grind/SKILL.md" \
+           && touch -t "$OLD" "$MGF/mirror/grind/SKILL.md"
+expect_rc "mirror: clone ahead = stale (3), not stranded" 3 mg check
+mg import >/dev/null 2>&1
+grep -q "policy v3" "$MGF/canon/skills/grind/SKILL.md" \
+  && ok "mirror: import REFUSES to clobber a newer clone file" \
+  || bad "mirror: import destroyed newer work in the clone"
+mg_out="$(mg import 2>&1)"
+case "$mg_out" in
+  *"SKIP (clone is newer)"*) ok "mirror: import reports what it skipped" ;;
+  *)                         bad "mirror: import skipped silently" ;;
+esac
+mg import --force >/dev/null 2>&1
+grep -q "policy v1" "$MGF/canon/skills/grind/SKILL.md" \
+  && ok "mirror: import --force overrides the refusal (explicit opt-in)" \
+  || bad "mirror: import --force did not override"
+
+# import rescues stranded work instead of making the operator retype it
+mg_fixture && echo "policy v2" > "$MGF/mirror/grind/SKILL.md" \
+           && echo "law v2" > "$MGF/mirror/grind/scripts/grind/value-gate" \
+           && touch -t "$OLD" "$MGF/canon/skills/grind/SKILL.md" "$MGF/canon/scripts/grind/value-gate"
+mg import >/dev/null 2>&1
+{ grep -q "policy v2" "$MGF/canon/skills/grind/SKILL.md" \
+  && grep -q "law v2" "$MGF/canon/scripts/grind/value-gate"; } \
+  && ok "mirror: import rescues both skill + law edits into the clone" \
+  || bad "mirror: import did not carry edits back"
+expect_rc "mirror: clean again after import" 0 mg check
+[ -d "$MGF/canon/skills/grind/scripts" ] \
+  && bad "mirror: import polluted the clone with the mirror-only scripts/ dir" \
+  || ok "mirror: import does not copy the mirror-only scripts/ dir"
+
+# owns() drives the PreToolUse hook — must be path-spelling-agnostic (git-bash
+# says /c/Users/..., the hook payload says C:\Users\...: one dir, two spellings)
+mg_fixture
+expect_rc "mirror: owns() true for a mirror skill path" 0 mg owns "$MGF/mirror/grind/SKILL.md"
+expect_rc "mirror: owns() true for the backslash spelling" 0 mg owns "$(printf '%s' "$MGF/mirror/culture/SKILL.md" | tr '/' '\\')"
+expect_rc "mirror: owns() FALSE for the canonical clone" 1 mg owns "$MGF/canon/skills/grind/SKILL.md"
+expect_rc "mirror: owns() FALSE for an unrelated file" 1 mg owns "$TMP/r1/src/api/a.txt"
+# fail CLOSED on a bad root: a guard that cannot find canonical must refuse, not pass
+expect_rc "mirror: non-canonical root refused (fail closed)" 2 \
+  env GRINDHOUSE_ROOT="$TMP/r1" CLAUDE_SKILLS_DIR="$MGF/mirror" GRINDHOUSE_CONF="$MGF/none.conf" \
+  bash "$SRC/mirror-guard" check
+
+# the hook itself: deny = exit 2 (Claude Code contract), allow = 0, fail OPEN
+hook_payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$1"; }
+hook() { env GRINDHOUSE_ROOT="$MGF/canon" CLAUDE_SKILLS_DIR="$MGF/mirror" \
+             GRINDHOUSE_CONF="$MGF/none.conf" bash "$SRC/mirror-hook"; }
+hook_payload "$MGF/mirror/grind/SKILL.md" | hook >/dev/null 2>&1
+[ "$?" = "2" ] && ok "hook: denies an edit to the live install (rc=2)" || bad "hook: did not deny a mirror edit"
+hook_payload "$MGF/canon/skills/grind/SKILL.md" | hook >/dev/null 2>&1
+[ "$?" = "0" ] && ok "hook: allows an edit to the canonical clone" || bad "hook: blocked a canonical edit"
+printf 'not json at all' | hook >/dev/null 2>&1
+[ "$?" = "0" ] && ok "hook: malformed payload fails OPEN" || bad "hook: malformed payload did not fail open"
+
+# ---------- N+1. the contribution law: anon-guard ----------
+# The licence obligation is to contribute back ANONYMIZED. Semantics under test:
+# ADDED lines only — the engine's own history is full of client references, and
+# a whole-tree scan would fail every PR forever.
+AGD="$TMP/ag"; AGT="$TMP/anon-terms"
+printf 'acme-?corp\n\\bWidgetCo\\b\n# a comment\n\n' > "$AGT"
+ag_repo() {
+  rm -rf "$AGD"; mkdir -p "$AGD" && cd "$AGD" || return 1
+  git init -q -b main 2>/dev/null || { git init -q && git checkout -qb main; }
+  git config user.email selftest@grindhouse && git config user.name selftest
+  git config commit.gpgsign false
+  echo "history: built for AcmeCorp on the WidgetCo account" > legacy.md
+  git add -A && git commit -qm "init: legacy client references"
+  git checkout -qb feat 2>/dev/null || git branch -q feat && git checkout -q feat
+}
+ag() { env GRIND_ANON_TERMS="$AGT" bash "$SRC/anon-guard" "$@"; }
+
+ag_repo
+echo "generalized: a large product repo hit the two-python trap" > new.md
+git add -A && git commit -qm "feat: generalized finding"
+expect_rc "anon: generalized addition passes" 0 ag main
+# pre-existing client names in the tree must NOT fail the gate
+grep -q "AcmeCorp" legacy.md && ok "anon: legacy client reference still in the tree" || bad "anon: fixture lost its legacy reference"
+
+ag_repo && echo "we hit this on the AcmeCorp migration" > new.md
+git add -A && git commit -qm "feat: client-named finding"
+expect_rc "anon: denylist term in an ADDED line blocked" 1 ag main
+
+ag_repo && git rm -q legacy.md && git commit -qm "chore: drop legacy notes"
+expect_rc "anon: client name in a REMOVED line passes (added-lines-only)" 0 ag main
+
+# the next four fixtures are SYNTHETIC leaks — they must survive anon-guard's own
+# gate to be contributable, hence the ANON-OK waiver (which prints its count)
+ag_repo && echo "ping someone.example@clientcorp.io if the gate trips" > new.md  # ANON-OK
+git add -A && git commit -qm "docs: contact"
+expect_rc "anon: e-mail address blocked" 1 ag main
+
+ag_repo && echo "see user@example.com for the placeholder convention" > new.md
+git add -A && git commit -qm "docs: placeholder"
+expect_rc "anon: example.com placeholder allowed" 0 ag main
+
+ag_repo && echo 'run it from C:\Users\jsmith\code\thing' > new.md  # ANON-OK
+git add -A && git commit -qm "docs: path"
+expect_rc "anon: absolute user path blocked" 1 ag main
+
+# regression: the first real run flagged this gate's OWN prose, because the
+# username char class also matched the ellipsis in a written-out placeholder
+ag_repo && echo 'git-bash says /c/Users/... and the payload says C:\Users\...' > new.md
+git add -A && git commit -qm "docs: placeholder path"
+expect_rc "anon: written-out path placeholder is not a leak" 0 ag main
+
+ag_repo && echo 'token: ghp_0123456789abcdefghijklmnopqrstuvwxyz' > new.md  # ANON-OK
+git add -A && git commit -qm "chore: token"
+expect_rc "anon: credential blocked" 1 ag main
+
+ag_repo && echo 'the box at 192.168.1.50 runs the logger' > new.md  # ANON-OK
+git add -A && git commit -qm "docs: host"
+expect_rc "anon: private IP blocked" 1 ag main
+
+ag_repo && echo "nothing to see" > new.md && git add -A && git commit -qm "docs: fine"
+expect_rc "anon: --staged mode with an empty index passes" 0 ag --staged
+
+# regression: `git diff HEAD` omits untracked files, so a brand-new skill or law
+# script — the usual shape of a contribution — was scanned as NOTHING and the
+# dry run reported green. A false green on a leak gate is worse than no gate.
+ag_repo && echo "we hit this on the AcmeCorp migration" > untracked.md
+expect_rc "anon: --working scans UNTRACKED files (no false green)" 1 ag --working
+
+# the escape hatch, and its loudness: a waiver that nobody can see is a hole
+ag_repo && echo 'fixture ghp_abcdefghijklmnop0123456789 # ANON-OK' > new.md  # ANON-OK
+git add -A && git commit -qm "test: synthetic fixture"
+expect_rc "anon: ANON-OK waives a synthetic fixture line" 0 ag main
+ag_out="$(ag main 2>&1)"
+case "$ag_out" in
+  *"waived via ANON-OK"*) ok "anon: waiver count is reported (never silent)" ;;
+  *)                      bad "anon: waiver was applied SILENTLY" ;;
+esac
+
+cd "$TMP" || true
+
 bash "$G/lock.sh" release >/dev/null 2>&1
 
 echo "== selftest: $PASS passed, $FAIL failed"

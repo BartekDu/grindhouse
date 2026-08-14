@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# mirror-hook — Claude Code PreToolUse hook: the live install is READ-ONLY.
+#
+# Incident (2026-08-14): see mirror-guard. Detection after the fact is not
+# enough — by the time `mirror-guard check` runs, an agent has already spent a
+# session improving a file that the next `install.sh` will delete. This hook
+# makes the wrong move impossible instead of regrettable: any Edit/Write into a
+# grindhouse-owned dir under ~/.claude/skills is denied at the tool boundary,
+# with the canonical path handed back so the agent can just redo it correctly.
+#
+# Wire it in ~/.claude/settings.json (install.sh prints the snippet):
+#   "hooks": { "PreToolUse": [ { "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+#     "hooks": [ { "type": "command", "command": "bash '<root>/scripts/grind/mirror-hook'" } ] } ] }
+#
+# Contract: hook JSON on stdin; exit 0 = allow, exit 2 = deny (stderr goes back
+# to the model). Fails OPEN on any internal error — a broken guard must never
+# brick the user's ability to edit files.
+set -o pipefail
+
+MH_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PAYLOAD="$(cat 2>/dev/null)" || exit 0
+[ -n "$PAYLOAD" ] || exit 0
+
+# The two-python trap (config.sh documents it): `command -v python3` false-hits
+# the Windows Store alias stub, which prints an install prompt and runs nothing.
+PYBIN=""
+for _c in python3 python; do
+  if "$_c" -c "import sys" >/dev/null 2>&1; then PYBIN="$_c"; break; fi
+done
+[ -n "$PYBIN" ] || exit 0   # fail open
+
+TARGET="$(printf '%s' "$PAYLOAD" | "$PYBIN" -c '
+import json,sys
+try: o=json.load(sys.stdin)
+except Exception: sys.exit(0)
+ti=o.get("tool_input") or {}
+for k in ("file_path","path","notebook_path"):
+    v=ti.get(k)
+    if isinstance(v,str) and v:
+        sys.stdout.write(v); break
+' 2>/dev/null)" || exit 0
+
+[ -n "$TARGET" ] || exit 0
+
+bash "$MH_SELF/mirror-guard" owns "$TARGET" 2>/dev/null || exit 0
+
+ROOT="$(bash "$MH_SELF/mirror-guard" root 2>/dev/null)" || ROOT="the grindhouse clone"
+
+cat >&2 <<EOF
+BLOCKED by grindhouse mirror-hook: $TARGET
+
+That path is the LIVE INSTALL — a mirror. Editing it is a work shredder:
+  - the next \`install.sh\` overwrites the change without warning, and
+  - the improvement never reaches a PR, which this project is obliged to file
+    (commercial use is licensed against contributing improvements back).
+
+Do it in the canonical clone instead:
+  $ROOT/skills/<skill>/...        SKILL.md, references/
+  $ROOT/scripts/grind/...         the law + selftest cases
+
+Then ship it (mirror check -> anonymization -> selftest -> PR):
+  bash "$ROOT/scripts/grind/contribute" -m "feat(skill): ..." <branch>
+  bash "$ROOT/install.sh"         # re-sync the mirror afterwards
+
+Already edited the mirror by mistake? Rescue it, don't retype it:
+  bash "$ROOT/scripts/grind/mirror-guard" import
+EOF
+exit 2
