@@ -64,8 +64,71 @@ if [ -f "$GRIND_MAIN_ROOT/.claude/grind/project.conf" ]; then
 fi
 GRIND_PROTECTED_BRANCHES="${GRIND_PROTECTED_BRANCHES-dev main master}"   # set EMPTY in project.conf to disable the push block
 
+# --- campaign key (grind assumed ONE campaign per repository; it no longer does) ---
+# The state tree stays anchored at the main root — see grind_main_root above, and do
+# NOT undo that: anchoring per-worktree gave builders an EMPTY state and silently
+# disarmed the guards. What was actually wrong is narrower. The tree was keyed by
+# REPOSITORY, so two concurrent campaigns shared one state.json, one focus, one PAUSE,
+# one lock and one gate counter.
+#
+# Measured 2026-08-17, all three in a single afternoon: a QA session had the focus flip
+# under it mid-run when a security campaign started, so its commits were refused by a
+# contract it had never agreed to; its /soft-pause sentinel parked BOTH campaigns; and
+# both minted a "G-13", because each independently computed max+1 over the same ledger.
+# The two G-13s then merged CLEANLY — their rows sat in different sections — so nothing
+# went red for a duplicate id. A shared counter between writers who cannot see each
+# other has no solution; the fix is to stop sharing the counter.
+#
+# So: still the main root (the law reaches builders), now keyed by campaign (campaigns
+# stop overwriting each other). A linked worktree resolves WHICH campaign owns it, so a
+# builder still inherits its own campaign's focus and guards.
+GRIND_ROOT_DIR="$GRIND_MAIN_ROOT/.claude/grind"     # shared by every campaign
+GRIND_CAMPAIGNS_DIR="$GRIND_ROOT_DIR/campaigns"
+
+# Resolution order. Each step is cheaper to be certain about than the next.
+#   1. $GRIND_CAMPAIGN                    explicit; also settable in project.conf
+#   2. <worktree>/.claude/grind-campaign  marker written when the worktree is created
+#   3. exactly one campaign exists        unambiguous, so no marker is needed
+#   4. no campaigns/ dir at all           legacy flat tree, behaviour unchanged
+#   5. AMBIGUOUS                          several campaigns, no marker -> never guess
+grind_resolve_campaign() {
+  local wt marker n last d
+  if [ -n "${GRIND_CAMPAIGN:-}" ]; then printf '%s' "$GRIND_CAMPAIGN"; return 0; fi
+
+  wt="$(git rev-parse --show-toplevel 2>/dev/null)" || wt=""
+  marker="$wt/.claude/grind-campaign"
+  if [ -n "$wt" ] && [ -f "$marker" ]; then
+    # tr -d '\r' because a marker written on Windows carries CRLF, and a campaign name
+    # with a trailing CR names a directory that does not exist — indistinguishable from
+    # "no campaign", which would fall through to the ambiguous branch for no reason.
+    head -n 1 "$marker" | tr -d '\r\n'; return 0
+  fi
+
+  if [ -d "$GRIND_CAMPAIGNS_DIR" ]; then
+    n=0; last=""
+    for d in "$GRIND_CAMPAIGNS_DIR"/*/; do [ -d "$d" ] || continue; n=$((n+1)); last="$d"; done
+    if [ "$n" = "1" ]; then basename "$last"; return 0; fi
+    if [ "$n" = "0" ]; then printf ''; return 0; fi
+    printf ''; return 2      # several, and nothing says which. The caller fails closed.
+  fi
+  printf ''                  # legacy: no campaigns/ dir, use the flat tree
+}
+
+GRIND_CAMPAIGN="$(grind_resolve_campaign)"; grind_campaign_rc=$?
+# Reported here, ENFORCED by the guards, and the split is deliberate: config.sh is
+# sourced by every hook, so exiting here would break unrelated commands. A guard that
+# cannot tell which campaign's law applies must REFUSE — quietly picking one is how the
+# disarmed-guard incident happened in the first place.
+GRIND_CAMPAIGN_AMBIGUOUS=0
+[ "$grind_campaign_rc" = "2" ] && GRIND_CAMPAIGN_AMBIGUOUS=1
+unset grind_campaign_rc
+
 # --- paths (anchored at the MAIN worktree root via GRIND_MAIN_ROOT, above) ---
-GRIND_DIR="$GRIND_MAIN_ROOT/.claude/grind"
+if [ -n "$GRIND_CAMPAIGN" ]; then
+  GRIND_DIR="$GRIND_CAMPAIGNS_DIR/$GRIND_CAMPAIGN"
+else
+  GRIND_DIR="$GRIND_ROOT_DIR"
+fi
 GRIND_STATE="${GRIND_DIR}/state.json"
 GRIND_RUNLOG="${GRIND_DIR}/run-log.md"
 GRIND_GATELEDGER="${GRIND_DIR}/gate-ledger.md"

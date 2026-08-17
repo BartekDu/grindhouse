@@ -223,6 +223,56 @@ git push -q origin main:grind/feat/x4 2>/dev/null && bad "landable: post-window 
 rm .claude/grind/gate-ledger.md
 expect_rc "lock re-acquire after release" 0 bash "$G/lock.sh" acquire w1b
 
+# ---------- 9b. gate-id (campaign-keyed ids; duplicate detection) ----------
+# The incident: two campaigns in one repo both computed max+1 over a shared ledger and
+# both minted "G-13". The rows sat in different sections, so the merge was CLEAN and
+# nothing went red. Every case below is one way that check can go wrong — a missed
+# duplicate, or a false one that would make somebody delete the check.
+rm -f .claude/grind/gate-ledger.md
+printf -- '- [ ] G-01 | needs:decision | blocks: a\n- [ ] G-02 | needs:check | blocks: b\n' > .claude/grind/gate-ledger.md
+expect_rc "gate-id: distinct ids pass" 0 bash "$G/gate-id" check
+
+printf -- '- [ ] G-02 | needs:other | blocks: c\n' >> .claude/grind/gate-ledger.md
+expect_rc "gate-id: duplicate row in one register FAILS" 1 bash "$G/gate-id" check
+
+# A fenced example is documentation, not a declaration. The ledger documents its own row
+# format inside a ```text fence, and a naive matcher false-blocks every push on it.
+printf -- '- [ ] G-01 | needs:decision | blocks: a\n' > .claude/grind/gate-ledger.md
+printf '```text\n- [ ] G-01 | needs:example | fenced sample\n```\n' >> .claude/grind/gate-ledger.md
+expect_rc "gate-id: fenced example is not a duplicate" 0 bash "$G/gate-id" check
+
+# A gate legitimately appears twice in GATES.md: a registry row, and a detail heading.
+# Counting the heading as a second declaration reports every documented gate as duplicated.
+printf '| Gate | Question |\n|---|---|\n| **G-01** | something |\n\n## G-01 — the detail section\n\ntext\n' > GATES.md
+rm -f .claude/grind/gate-ledger.md
+expect_rc "gate-id: registry row + detail heading is not a duplicate" 0 bash "$G/gate-id" check
+
+# The registry is the first table CONTAINING IDS, not the first table. GATES.md opens with
+# a "what belongs here" table; assuming the first block found 2 rows in a file holding 20.
+printf '| | Goes where |\n|---|---|\n| A decision | here |\n\n| Gate | Question |\n|---|---|\n| **G-01** | a |\n| **G-02** | b |\n' > GATES.md
+[ "$(bash "$G/gate-id" check | grep -o '[0-9]* registry row')" = "2 registry row" ] \
+  && ok "gate-id: registry is the first table WITH ids, not the first table" \
+  || bad "gate-id: picked the wrong table as the registry"
+
+# A repeated id inside a later grouped sub-table is prose, not a second declaration.
+printf '\n## G-01 — grouped\n\n| | Decide |\n|---|---|\n| **G-01** | restated |\n' >> GATES.md
+expect_rc "gate-id: id repeated in a later sub-table is not a duplicate" 0 bash "$G/gate-id" check
+
+# Two registers each starting at G-01 is normal — the grind ledger and a repo GATES.md
+# have separate lifecycles. Comparing across them reports a collision that costs nothing.
+printf -- '- [ ] G-01 | needs:decision | blocks: a\n' > .claude/grind/gate-ledger.md
+expect_rc "gate-id: same id in two different registers is not a duplicate" 0 bash "$G/gate-id" check
+
+# Minting: next free number, and the campaign suffix is what makes concurrent campaigns safe.
+# G-01 and G-02 are in the registry by now, so the next free number is 03. Asserted as the
+# literal expected id rather than "greater than the highest": an off-by-one that mints a
+# number already in use is the whole failure this file is about.
+[ "$(bash "$G/gate-id" mint)" = "G-03" ] \
+  && ok "gate-id: mint takes the next free number" || bad "gate-id: mint number wrong"
+[ "$(GRIND_CAMPAIGN=alpha bash "$G/gate-id" mint)" = "G-03-alpha" ] \
+  && ok "gate-id: mint carries the campaign suffix" || bad "gate-id: mint dropped the campaign suffix"
+rm -f GATES.md .claude/grind/gate-ledger.md
+
 # ---------- 10. cost-table ----------
 [ "$(bash "$G/cost-table" p90 doc)" = "6" ] && ok "cost: conservative default (doc=6)" || bad "cost: default wrong"
 bash "$G/cost-table" record test-add 7 >/dev/null; bash "$G/cost-table" record test-add 9 >/dev/null; bash "$G/cost-table" record test-add 11 >/dev/null

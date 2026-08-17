@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# gate-id — mint and verify gate identifiers that cannot collide between campaigns.
+#
+# THE INCIDENT (2026-08-17). Two campaigns ran in one repository on the same afternoon.
+# Each logged a gate, each read the shared ledger, each computed max+1, and each minted
+# "G-13". The two rows landed in different sections of the file, so the merge was CLEAN
+# and nothing went red. The duplicate was found days-later-cheap only because a human
+# happened to read both rows; the renumbering that followed then reverted silently in
+# five files, because fixing a cherry-pick conflict does not protect the same lines in
+# the commits still queued behind it.
+#
+# A counter shared by writers who cannot see each other has no correct implementation.
+# So the id carries the campaign that minted it:
+#
+#     G-<NN>-<campaign>            e.g. G-07-secops, G-13-qa-test-expansion
+#
+# NN is per-campaign, which makes max+1 sound again: since state moved to
+# .claude/grind/campaigns/<campaign>/ (see config.sh), one campaign owns one ledger and
+# is the only writer to it. The suffix is NOT invented by the agent — it comes from the
+# resolved campaign, which is derived from the worktree, and git already guarantees
+# worktree names are unique. An agent that picks its own slug can pick "qa" twice.
+#
+# Legacy bare ids (G-01 .. G-20) stay valid forever and are never rewritten. They are
+# recognised, reported, and left alone — renumbering an id that is already cited in
+# commit messages, code comments and reports is the more expensive error.
+#
+# Usage:
+#   gate-id mint                 print the next free id for this campaign
+#   gate-id check [file...]      exit 1 if any id is DECLARED twice (default: ledger + GATES.md)
+#   gate-id list  [file...]      print every declared id, with its file and line
+#
+# `check` is what landable-guard calls. It looks only at DECLARATIONS, never at prose
+# citations, so a document that mentions G-13 fifty times is not a duplicate.
+
+set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 0
+. "$HERE/config.sh"
+
+# ---------------------------------------------------------------------------
+# Where declarations live. A repo may use either or both.
+# ---------------------------------------------------------------------------
+default_sources() {
+  [ -f "$GRIND_GATELEDGER" ] && printf '%s\n' "$GRIND_GATELEDGER"
+  [ -f "$ROOT/GATES.md" ]    && printf '%s\n' "$ROOT/GATES.md"
+  return 0
+}
+
+# Print "kind<TAB>id<TAB>file<TAB>line" for every DECLARATION in the given files.
+#
+# TWO KINDS, and conflating them is a bug this function was born with. A gate
+# legitimately appears TWICE in GATES.md: once as a registry ROW in the table, and once
+# as a DETAIL heading below it. Checking for "declared twice" without that distinction
+# reports every documented gate as a duplicate and blocks every push. Only rows are
+# unique-per-gate; headings are prose anchors.
+#
+# !!! FENCE-SKIP TRAP !!! The ledger documents its own row format inside a ```text
+# fence. landable-guard was once false-blocking every push because a naive grep matched
+# that example. Fenced lines are stripped here for the same reason: an example id in
+# documentation is not a declaration.
+#
+# Extraction uses 2-argument match() + RSTART/RLENGTH, which is POSIX. The 3-argument
+# form that captures into an array is a gawk extension, and this bundle ships to
+# machines whose /usr/bin/awk is mawk or busybox — where it is a syntax error, not a
+# degraded result.
+declarations() {
+  awk '
+    FNR == 1 { infence = 0; block = 0; in_table = 0 }
+    /^[[:space:]]*```/ { infence = !infence; next }
+    infence { next }
+    {
+      # Track table blocks. A markdown file holds SEVERAL tables: GATES.md opens with a
+      # "what belongs here" table, THEN the registry, then a grouped sub-table inside a
+      # detail section that repeats registry ids on purpose (G-09a..G-09e).
+      #
+      # The registry is therefore not "the first table" — an earlier heuristic assumed
+      # that and found 2 rows in a file holding 20. It is the first table block that
+      # CONTAINS GATE IDS, which cannot be known until one is seen, so rows are buffered
+      # and the choice is made per file in END.
+      is_table_line = ($0 ~ /^[[:space:]]*\|/)
+      if (is_table_line && !in_table) { in_table = 1; block++ }
+      else if (!is_table_line && in_table) { in_table = 0 }
+
+      kind = ""; from_table = 0
+      # ledger row:  - [ ] G-07-qa | needs:...   (a list, not a table; every one counts)
+      if ($0 ~ /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*[~*]*G-/)      kind = "row"
+      # a table row carrying an id — provisionally a registry row, decided in END
+      else if (is_table_line && $0 ~ /^[[:space:]]*\|[[:space:]]*[~*]*[[:space:]]*[~*]*G-/) { kind = "row"; from_table = 1 }
+      # detail heading:  ## G-07-qa — ...
+      else if ($0 ~ /^#+[[:space:]]*[~*]*[[:space:]]*[~*]*G-/)               kind = "detail"
+      if (kind == "") next
+
+      if (match($0, /G-[A-Za-z0-9][A-Za-z0-9._-]*/) == 0) next
+      id = substr($0, RSTART, RLENGTH)
+      sub(/[*~._-]+$/, "", id)
+
+      n++
+      f_[n] = FILENAME; k_[n] = kind; i_[n] = id; l_[n] = FNR
+      b_[n] = from_table ? block : 0
+      if (from_table && (!(FILENAME in registry) || block < registry[FILENAME])) registry[FILENAME] = block
+    }
+    END {
+      for (j = 1; j <= n; j++) {
+        # A table row outside its file s registry block is prose repeating an id.
+        if (b_[j] > 0 && b_[j] != registry[f_[j]]) k_[j] = "detail"
+        printf "%s\t%s\t%s\t%d\n", k_[j], i_[j], f_[j], l_[j]
+      }
+    }
+  ' "$@" 2>/dev/null
+}
+
+# Registry rows only — the lines that are meant to be one-per-gate.
+rows() { declarations "$@" | awk -F'\t' '$1 == "row" { print }'; }
+
+cmd="${1:-check}"; shift 2>/dev/null || true
+files=("$@")
+if [ "${#files[@]}" -eq 0 ]; then
+  mapfile -t files < <(default_sources)
+fi
+if [ "${#files[@]}" -eq 0 ]; then
+  # No ledger and no GATES.md is not a failure — a repo may simply not log gates yet.
+  case "$cmd" in
+    mint) echo "G-01${GRIND_CAMPAIGN:+-$GRIND_CAMPAIGN}"; exit 0 ;;
+    *)    echo "gate-id: no gate ledger and no GATES.md — nothing to check."; exit 0 ;;
+  esac
+fi
+
+case "$cmd" in
+  list)
+    declarations "${files[@]}" | awk -F'\t' '{ printf "%-24s %-6s %s:%s\n", $2, $1, $3, $4 }' | sort
+    ;;
+
+  mint)
+    # Highest NN already used BY THIS CAMPAIGN, +1. Legacy bare ids are counted too, so
+    # a repo migrating mid-campaign does not restart at 01 and collide with its own past.
+    suffix="${GRIND_CAMPAIGN:-}"
+    highest="$(rows "${files[@]}" | cut -f2 | awk -v s="$suffix" '
+      {
+        id = $0
+        sub(/^G-/, "", id)
+        num = id + 0                         # leading digits, 0 if there are none
+        rest = id
+        sub(/^[0-9]+/, "", rest)             # "" for a bare id, "-secops" for a suffixed one
+        sub(/^-/, "", rest)
+        own = (rest == s) || (rest == "")     # this campaign, or a legacy bare id
+        if (own && num > max) max = num
+      }
+      END { print max + 0 }
+    ')"
+    next=$((highest + 1))
+    printf 'G-%02d%s\n' "$next" "${suffix:+-$suffix}"
+    ;;
+
+  check)
+    # Scoped PER FILE. The grind ledger and a repo's GATES.md are separate registers with
+    # separate lifecycles — the ledger is grind's own and usually untracked — and each
+    # legitimately starts at G-01. Comparing across them reports a collision that costs
+    # nothing and hides the ones that cost something.
+    dupes="$(rows "${files[@]}" | awk -F'\t' '{ print $3 "\t" $2 }' | sort | uniq -d | cut -f2)"
+    if [ -n "$dupes" ]; then
+      echo "!!! GRIND GATE-ID: the same gate id is declared more than once in one register !!!" >&2
+      echo "$dupes" | while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        echo "  $id" >&2
+        rows "${files[@]}" | awk -F'\t' -v want="$id" '$2 == want { printf "      %s:%s\n", $3, $4 }' >&2
+      done
+      echo >&2
+      echo "  Two campaigns almost certainly minted the same number independently. Do NOT" >&2
+      echo "  renumber the one that is already cited elsewhere — commit messages, code" >&2
+      echo "  comments and reports point at it, and those references revert silently." >&2
+      echo "  Give the NEWER gate a campaign-suffixed id: \`bash \$G/gate-id mint\`." >&2
+      exit 1
+    fi
+    echo "gate-id: ok — $(rows "${files[@]}" | wc -l | tr -d ' ') registry row(s), no duplicates."
+    ;;
+
+  *)
+    echo "gate-id: unknown command '$cmd' (expected: mint | check | list)" >&2
+    exit 2
+    ;;
+esac

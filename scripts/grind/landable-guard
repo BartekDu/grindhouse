@@ -59,5 +59,27 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   done
 done
 
+# 3. an unresolvable campaign, and duplicate gate ids
+#    Two campaigns that cannot see each other both compute max+1 over the same ledger and
+#    both mint the same number. Their rows then land in different sections and merge
+#    CLEANLY — measured 2026-08-17, two G-13s in one repository with nothing going red. A
+#    duplicate id is only cheap to fix before it is cited; afterwards renumbering reverts
+#    silently across commit messages, code comments and reports.
+if [ "${GRIND_CAMPAIGN_AMBIGUOUS:-0}" = "1" ]; then
+  echo "!!! GRIND LANDABLE-GUARD: cannot tell which campaign this worktree belongs to !!!" >&2
+  echo "  Several campaigns exist under .claude/grind/campaigns/ and nothing here names one." >&2
+  echo "  Refusing rather than picking one: guessing which campaign's law applies is how an" >&2
+  echo "  out-of-focus commit passed clean inside a builder worktree once already." >&2
+  echo "  Fix: write the campaign name into <worktree>/.claude/grind-campaign, or export" >&2
+  echo "  GRIND_CAMPAIGN=<name> for this shell." >&2
+  fail=1
+fi
+if [ -f "$HERE/gate-id" ]; then
+  if ! bash "$HERE/gate-id" check >/dev/null 2>&1; then
+    bash "$HERE/gate-id" check >&2 || true
+    fail=1
+  fi
+fi
+
 [ "$fail" = "0" ] || { command -v grind_audit >/dev/null 2>&1 && grind_audit "landable_guard" "BLOCKED push"; exit 1; }
 exit 0
