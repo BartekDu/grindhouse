@@ -106,6 +106,7 @@ On a cron-resumed window, SKIP straight to loading the stored focus + branches f
 1. If the user gave a `[focus]`, propose a contract from it; else AskUserQuestion to confirm. The contract is **path globs**, not a phrase:
    - `allowed_globs` (e.g. `apps/mobile/**`), `forbidden_globs` (e.g. `underline/api/**`, `infra/**`, `**/migrations/**`), `allowed_operations` (e.g. "add tests; refactor existing components; NO new feature routes").
 2. Write it into `state.json` (`.focus`), reset `window_counter` to 0 if a fresh run.
+2b. **Workflow authorisation (once per campaign).** Ask whether `Workflow` links are authorised, and store the answer as `state.json .focus.workflow_mode`: `none` (agent waves only), `named-phases` (only for phases the founder names), or `standing` (the orchestrator picks the mode per link). A `/grind` invocation is not itself the `Workflow` opt-in. Cron-resumed windows **read** this field and never re-ask.
 3. **Branches (3-tier).** Compute `CAMPAIGN=grind-$(date +%d-%m-%Y)`. If it doesn't exist, cut it from the base branch (`grind_base_branch` — auto-detected, overridable via `project.conf`); store as `state.json .campaign_branch`. Then derive `grind/feat/<slug>` per feature/focus-slice (lowercase-dash slug; e.g. "mobile coverage" → `grind/feat/mobile-coverage`), cut **from the campaign branch**, store each in `state.json .sessions[]`. The base for grinding work is always a `grind/feat/*` branch — never `dev`, never the campaign branch directly, never a shared trunk. (Cron-resumed windows reuse the stored branches; do not re-cut.)
 4. **Gitignore hygiene first.** Run `bash $G/hygiene-check fix` — it appends any missing scratch-noise ignores (`.claude/worktrees/`, `*.tmp`, grind's volatile state files, + `GRIND_EXTRA_IGNORES` from `project.conf`) to `.gitignore`. If it added entries, commit `.gitignore` on the campaign branch **before any other work** (`chore: gitignore scratch noise (worktrees, tmp)`). This is why the loop never resurfaces the 455-untracked-file mess.
 4b. **Swarm board (team player, cross-checkout).** `bash $G/swarm-claim.sh check` — exit 2 means a LIVE foreign swarm (another user/machine) owns overlapping focus globs: narrow your globs or negotiate via a comment on the conflicting `swarm-claim` issue; never bulldoze. On CLEAR: `bash $G/swarm-claim.sh claim` to post yours. Treat foreign claims like your own `forbidden_globs`. (`LOCAL_ONLY` = no gh/remote — same-machine concurrency is already covered by lock.sh + the run-log table; proceed.)
@@ -128,6 +129,58 @@ When the loop fans out, it uses this **standard council** and **tables every con
 | **Scout** | 1, when the in-focus queue runs low | read-only | refresh the in-focus backlog candidates (next grindable tasks) so the loop never idles early while quota remains — **graphify-query first** (see Context acquisition), grep only as fallback |
 
 **Staffing (model × effort per role):** take model + effort from `references/staffing.md` — the engine-wide difficulty→model matrix, incl. the quota-aware downgrade rule (binding per-model weekly bar ≤ `GRIND_MODEL_DOWNGRADE_PCT` → non-GATE roles drop one tier; GATE-class judgment defers, never downgrades). Wire via `Agent`/`agent()` `opts.model` + `opts.effort`.
+
+### A window is a CHAIN OF LINKS; a link may be a workflow (ratified 2026-08-15)
+
+A grind window is not one fan-out — it is an ordered **chain of links**, and each link is dispatched
+in whichever mode fits the work. The orchestrator picks the mode per link; the branch model, the
+scope-guard, the concurrency table and the merge gate are identical in all three.
+
+| Link mode | Use when | Dispatch |
+|---|---|---|
+| **inline** | one small task, or a judgement call that IS the orchestrator's job | do it in the main session |
+| **agent wave** | 2–4 independent slices, each a whole feature, each needing its own judgement | parallel `Agent` calls on disjoint `grind/feat/*` worktrees |
+| **workflow** | the work is a *shape*: N similar items through the same stages, or a stage that must be adversarially verified before it counts | one `Workflow` call whose script encodes the fan-out + verify |
+
+**When a workflow beats an agent wave.** Reach for `Workflow` when the link has *structure a script
+can hold and a prompt cannot*: many items of the same kind (27 endpoints, 40 call sites, every file
+in a migration), a verify stage that must run per item, a loop that should keep going until it stops
+finding things, or a judge panel. An agent wave is better when each slice is a different problem
+needing different judgement — four unlike backend subsystems, say. **Do not use a workflow to run
+four unlike features in parallel**; that is an agent wave wearing a costume, and it costs the
+per-slice prompt precision that makes the wave work.
+
+**Opt-in still governs.** `Workflow` requires the explicit opt-in described in its own tool
+description (the "ultracode" keyword, a standing session opt-in, or the founder asking for a
+workflow in their own words). A `/grind` invocation is **not** by itself that opt-in. Ask once, at
+Step 0, whether workflows are authorised for this campaign, record the answer in
+`state.json .focus.workflow_mode` (`none` | `named-phases` | `standing`), and honour it for every
+window in the chain — including cron-resumed ones, which read it rather than re-ask.
+
+**Rules that do not relax inside a workflow.** The script is a dispatch mode, not an exemption:
+
+- Every workflow agent that writes gets a `grind/feat/<slug>` worktree with a **disjoint** write-scope,
+  the same as a builder. Use `opts.isolation: 'worktree'` only where agents genuinely write in
+  parallel — it is expensive, and most fan-outs are read-and-report.
+- The **savepoint contract holds**: a workflow stage that writes must reach a commit inside ~10
+  minutes. Decompose at script-authoring time, not at "when it's done".
+- A workflow's output is **not merged on the strength of the script finishing.** A link merges on a
+  clean verifier pass, exactly as a builder branch does.
+- **The workflow does not own the quota gate.** Run `quota-gate.sh` before dispatching the link and
+  again before the next one. A workflow can spend a large share of a window in one call; a link that
+  will not fit the reserve is decomposed or deferred, never launched hopefully.
+- Table the workflow as **one row** in the concurrency manifest (role `workflow`, its script name as
+  the task, its current phase as the status), with per-stage detail beneath it when it is long-running.
+- Prefer `pipeline()` over `parallel()` for the same reason a builder does not wait for its
+  siblings: a barrier between stages wastes the fast items' wall-clock. Barrier only where a stage
+  genuinely needs every prior result at once.
+- **Read the journal before believing an empty result.** `<transcriptDir>/journal.jsonl` records what
+  each agent actually returned. A workflow that found nothing and a workflow whose schema rejected
+  every finding look identical from the outside, and only one of them is good news.
+
+**Chaining across links is what makes a grind a grind.** Read each link's result before choosing the
+next one — that is the point of staying in the loop. A window that dispatches five links back to
+back without reading any of them is a script, and should have been written as one workflow.
 
 ### Context acquisition — graph-first (inject into EVERY scout/builder/verifier prompt)
 
@@ -188,7 +241,7 @@ Repeat until a STOP:
    - **(c)** always-safe tech-debt inside focus — add tests / raise coverage, build the `!!! TRAP !!!` → TRAPS.md index, observability backfill, lint/type hardening;
    - **(d)** → Floor activity.
      For (b)/(c), first pass the value gate: `bash $G/value-gate "<justification naming an objective win>"` (a closed backlog id, a coverage increase, or a lint/type-error decrease). REJECT → skip the task + log it; do not do unjustifiable busywork.
-3. **Execute on a `grind/feat/<slug>` branch.** Small tasks inline; independent tasks fan out per the council (builders on disjoint-scope worktrees, ≤ MAX_CONCURRENT). Commit per task onto the feature branch — the **scope-guard pre-commit hook rejects out-of-focus paths**, so a blocked commit means you strayed: narrow, don't widen the focus. Each commit message is conventional `<scope>: <subject>` (the **commit-msg-guard hook enforces it** during a window), with a why-body when non-obvious + the task id (e.g. `Task: T-07`). NEVER ship opaque messages (`wip`, `stuff`, `fixes`, `misc`).
+3. **Execute on a `grind/feat/<slug>` branch.** Pick the link mode first — inline / agent wave / workflow (see "A window is a CHAIN OF LINKS" above); small tasks inline, independent unlike slices fan out per the council (builders on disjoint-scope worktrees, ≤ MAX_CONCURRENT), same-shaped N-item work goes to a workflow where `workflow_mode` allows it. Commit per task onto the feature branch — the **scope-guard pre-commit hook rejects out-of-focus paths**, so a blocked commit means you strayed: narrow, don't widen the focus. Each commit message is conventional `<scope>: <subject>` (the **commit-msg-guard hook enforces it** during a window), with a why-body when non-obvious + the task id (e.g. `Task: T-07`). NEVER ship opaque messages (`wip`, `stuff`, `fixes`, `misc`).
 4. **Verify then merge.** A builder's feature branch merges into the campaign branch only after its Verifier passes (`bash $G/verify-run` clean). Update the concurrency table (`ready`→`merged`).
 5. **Leave the tree clean.** After each task: `git status` empty of stray untracked files (commit real work, or ignore scratch via `bash $G/hygiene-check fix`). The between-task invariant is a boring, clean `git status`.
 6. **Record cost.** If you have a fresh pre/post quota delta, `bash $G/cost-table record <TASK_TYPE> <DELTA_PCT>`. Update `state.json` (atomic) + append `run-log.md`.
@@ -225,7 +278,8 @@ When the ladder is dry (no in-focus tasks pass the value gate), write ONE `.clau
 - **Never** treat "task list empty" as the stop condition — that is the bug. Stop only on quota floor / human-gate / genuinely-exhausted-in-focus-work.
 - **Never** reinterpret or bypass `quota-gate.sh` / `scope-guard` / `landable-guard` / `commit-msg-guard` / `hygiene-check` / `verify-run` exit codes.
 - **Never** commit to a protected branch/the campaign branch directly/a shared trunk; build on `grind/feat/<slug>` branches off the dated campaign branch — one feature = one branch = one reviewable unit.
-- **Never** dispatch two concurrent builders with overlapping write-scope; never skip the verifier before merging a feature branch.
+- **Never** dispatch two concurrent builders with overlapping write-scope; never skip the verifier before merging a feature branch. The same holds inside a workflow: a script is a dispatch mode, not an exemption from the scope-guard, the savepoint contract or the merge gate.
+- **Never** launch a workflow link without re-running the quota gate first, and never merge one because the script finished — a workflow merges on a clean verifier pass like everything else.
 - **Never** leave stray untracked files between tasks — track real work or ignore noise via `hygiene-check fix`; the tree stays boringly clean.
 - **Never** write an opaque commit message — conventional `<scope>: <subject>` + why-body + task id, always.
 - **Never** answer an interactive skill's questions for the founder — log a gate.

@@ -86,7 +86,41 @@ if [ -n "$violation" ]; then
   echo "!!! GRIND SCOPE-GUARD: commit blocked — out-of-focus paths !!!" >&2
   echo "Active focus: $(grind_state_get focus.label)" >&2
   echo "$violation" | sed 's/^/  - /' >&2
-  echo "Fix: only touch paths inside the focus globs, or log a gate + move on (do NOT widen focus mid-window)." >&2
+  # Has this path been blocked before in this campaign?
+  #
+  # Blocked ONCE is very likely scope creep, and the standing advice is right: log a gate, move on.
+  # Blocked TWICE, by units that could not see each other, is a different signal entirely - the
+  # same one D16 records for convergence between independently-scoped agents. Two units reaching
+  # for the same forbidden file is not two attempts at creep; it is evidence that the contract
+  # omits something the declared work needs.
+  #
+  # The guard already wrote every block to the audit log, and nothing ever read it back. This does.
+  repeats="$(GRIND_AUDIT="$GRIND_AUDIT" GRIND_VIOL="$violation" python -c '
+import os, pathlib
+paths = [ln.split("  (")[0].strip() for ln in os.environ.get("GRIND_VIOL", "").splitlines() if ln.strip()]
+log = pathlib.Path(os.environ.get("GRIND_AUDIT", ""))
+if log.exists():
+    text = log.read_text(encoding="utf-8", errors="replace")
+    for q in paths:
+        n = text.count(q)
+        if n:
+            print("  - %s  (blocked %d time%s before)" % (q, n, "" if n == 1 else "s"))
+' 2>/dev/null || true)"
+
+  if [ -n "$repeats" ]; then
+    echo "" >&2
+    echo "!!! SECOND unit blocked on the same path - read this before logging a gate:" >&2
+    echo "$repeats" >&2
+    echo "" >&2
+    echo "Blocked once is probably creep. Blocked twice, by units that could not see each other," >&2
+    echo "is evidence the CONTRACT is wrong rather than the work." >&2
+    echo "Ask: does the phase, as declared, REQUIRE this file?" >&2
+    echo "  yes -> the contract omitted it. Amend allowed_globs and record WHY in state.json," >&2
+    echo "         where the founder can disagree. That is a correction, not a widening." >&2
+    echo "  no  -> it is creep. Log the gate and move on." >&2
+  else
+    echo "Fix: only touch paths inside the focus globs, or log a gate + move on (do NOT widen focus mid-window)." >&2
+  fi
   grind_audit "scope_guard" "BLOCKED commit; offending=$(printf '%s' "$violation" | tr '\n' ';')"
   exit 1
 fi
