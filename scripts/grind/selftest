@@ -273,6 +273,28 @@ expect_rc "gate-id: same id in two different registers is not a duplicate" 0 bas
   && ok "gate-id: mint carries the campaign suffix" || bad "gate-id: mint dropped the campaign suffix"
 rm -f GATES.md .claude/grind/gate-ledger.md
 
+# Campaign resolution. The ambiguous case is the safety-critical one: it is the same
+# shape as the incident where a builder worktree got an empty state and the guards went
+# quiet, so it must FAIL CLOSED rather than pick a campaign. The directories are removed
+# immediately — while they exist, GRIND_DIR moves, and every later section reads it.
+[ "$(bash -c '. "$G/config.sh"; echo "${GRIND_CAMPAIGN}|${GRIND_CAMPAIGN_AMBIGUOUS}"' 2>/dev/null)" = "|0" ] \
+  && ok "campaign: no campaigns dir -> legacy flat tree, unambiguous" \
+  || bad "campaign: legacy resolution changed"
+mkdir -p .claude/grind/campaigns/alpha
+[ "$(bash -c '. "$G/config.sh"; echo "${GRIND_CAMPAIGN}|${GRIND_CAMPAIGN_AMBIGUOUS}"' 2>/dev/null)" = "alpha|0" ] \
+  && ok "campaign: exactly one campaign resolves without a marker" \
+  || bad "campaign: single-campaign resolution wrong"
+mkdir -p .claude/grind/campaigns/beta
+[ "$(bash -c '. "$G/config.sh"; echo "${GRIND_CAMPAIGN_AMBIGUOUS}"' 2>/dev/null)" = "1" ] \
+  && ok "campaign: several campaigns + no marker -> AMBIGUOUS (guards fail closed)" \
+  || bad "campaign: ambiguity not reported — a guard would pick one"
+printf 'beta\n' > .claude/grind-campaign
+[ "$(bash -c '. "$G/config.sh"; echo "${GRIND_CAMPAIGN}|${GRIND_CAMPAIGN_AMBIGUOUS}"' 2>/dev/null)" = "beta|0" ] \
+  && ok "campaign: worktree marker resolves the ambiguity" \
+  || bad "campaign: marker file ignored"
+rm -f .claude/grind-campaign
+rm -rf .claude/grind/campaigns
+
 # ---------- 10. cost-table ----------
 [ "$(bash "$G/cost-table" p90 doc)" = "6" ] && ok "cost: conservative default (doc=6)" || bad "cost: default wrong"
 bash "$G/cost-table" record test-add 7 >/dev/null; bash "$G/cost-table" record test-add 9 >/dev/null; bash "$G/cost-table" record test-add 11 >/dev/null
