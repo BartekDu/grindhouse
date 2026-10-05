@@ -125,6 +125,27 @@ When the loop fans out, it uses this **standard council** and **tables every con
 | **Verifier** | 1 per builder (cheap, adversarial) | read-only on the builder's branch | run the NON-interactive gates: `bash $G/verify-run` (explicit `.claude/grind/verify-cmds`, else auto-detected test/lint/typecheck for the project type) — plus a `/codex` pass-fail where installed — before the orchestrator merges; a builder branch merges only on a clean verifier pass. `verify-run` exit 3 = NO gates detected → the branch is UNVERIFIED, not green: add gates or log it loudly |
 | **Scout** | 1, when the in-focus queue runs low | read-only | refresh the in-focus backlog candidates (next grindable tasks) so the loop never idles early while quota remains — **graphify-query first** (see Context acquisition), grep only as fallback |
 
+### Model + effort — explicit on EVERY dispatch
+
+Every `Agent` call and every Workflow `agent()` call sets BOTH `model` and `effort`.
+An agent with no `effort` inherits the orchestrator session's effort, and a grind
+session usually runs at `max`.
+
+| Role | Model | Effort |
+|---|---|---|
+| design, architecture, critique, review of a plan | opus/fable | high (max only when the founder asks) |
+| builder, fix round | as staffed per package | high |
+| verifier, re-verifier, reviewer of merged work | sonnet | high |
+| scout, log trawl | sonnet | medium |
+
+Incident (2026-09-27, session `6c5ee3ea`, $655): 58 Sonnet agents (builders,
+verifiers, fixers, scouts) had no `effort` and ran at the inherited `max` — about
+$240 of the session. Sonnet builders at `max` cost $11.21 per package against $2.72
+at `high`, and passed first-pass verify less often (5 of 8 vs 12 of 16; cc-ledger
+fixed 2026-10-05). Lowering a builder below `high` is a quality experiment, not a
+default: Opus builders pass 21 of 27 at `high` against 8 of 13 at `medium`. Check
+`/ledger quality` after a wave before changing this table.
+
 ### Context acquisition — graph-first (inject into EVERY scout/builder/verifier prompt)
 
 > If `graphify-out/graph.json` exists at the repo root: route structural questions
@@ -227,6 +248,7 @@ When the ladder is dry (no in-focus tasks pass the value gate), write ONE `.clau
 - **Never** answer an interactive skill's questions for the founder — log a gate.
 - **Never** grep-sweep for structure when `graphify-out/graph.json` exists — graphify-query first; grep confirms lines, it doesn't explore.
 - **Never** dispatch a builder task that won't reach a commit within ~10 minutes — decompose it; savepoints are what make `/soft-pause` and power cuts cheap.
+- **Never** dispatch an agent without an explicit `model` and `effort` — an omitted effort inherits the session's (usually `max`).
 - **Never** kill units on quota-gate exit 7 (SOFT_PAUSE) — drain each to its savepoint, settle, park.
 - **Never** proceed past a `swarm-claim.sh check` exit 2 — narrow globs or negotiate on the issue; foreign claims = your forbidden_globs.
 - **Always** cut the dated campaign branch from the base branch (`grind_base_branch`) + feature branches from the campaign branch; store them in `state.json` (`.campaign_branch`, `.sessions[]`); reuse (not re-cut) on cron windows.

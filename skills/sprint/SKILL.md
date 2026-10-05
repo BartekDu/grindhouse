@@ -156,6 +156,11 @@ Write `state.json .sprint.team[]` + a run-log table. Per role:
 | build/verify runs, test authoring | sonnet | high |
 | architecture, taste, merge conflicts, orchestration, GATE-class judgment | opus/fable | high/max |
 
+Every `agent()` / `Agent` call sets BOTH fields from the manifest: an omitted
+`effort` inherits the orchestrator session's effort (usually `max`) — in session
+`6c5ee3ea` (2026-09-27) that was about $240 of Sonnet agents at `max` with no
+better first-pass rate than `high`.
+
 When unsure between tiers, take the cheaper one for read-only roles and the
 stronger one for anything that writes code the founder will review. Record
 actual per-task quota deltas via `bash $G/cost-table record` so the matching
@@ -167,7 +172,8 @@ Each wave = **ONE Workflow run**:
 
 ```
 pipeline(waveItems,
-  item => agent(buildPrompt(item),  {model: team[item.role].model, effort: ...,
+  item => agent(buildPrompt(item),  {model: team[item.role].model,
+                                     effort: team[item.role].effort,
                                      isolation: 'worktree', phase: 'Build'}),
   (res, item) => agent(verifyPrompt(item), {model: 'sonnet', effort: 'high',
                                             phase: 'Verify'}))
