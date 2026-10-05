@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# rules-init — make sure the project's rules file exists.
+#
+# <main root>/.claude/grind/rules.md holds the project's hard constraints
+# (size limits, network exceptions, house style). The orchestrator pastes it
+# verbatim into every builder and verifier brief, so a constraint learned once
+# reaches every agent. Creates a skeleton when missing; never overwrites.
+# Prints the path, then "skeleton" (no rules yet) or "rules: N lines".
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 1
+. "$HERE/config.sh"
+f="$GRIND_DIR/rules.md"
+mkdir -p "$GRIND_DIR"
+if [ ! -f "$f" ]; then
+  cat > "$f" <<'MD'
+# Project rules for grind agents
+
+Pasted verbatim into every builder and verifier brief. One rule per bullet,
+each with the reason or incident behind it. Commit this file.
+
+<!-- examples:
+  - Every printed part fits 240 x 240 x 240 mm in print orientation; split larger parts.
+  - Network is allowlisted: a failed download needs an allow rule the user approves.
+-->
+MD
+fi
+echo "$f"
+n="$(grep -c '^[-*] ' "$f" 2>/dev/null)"
+[ "${n:-0}" -gt 0 ] && echo "rules: $n" || echo "skeleton"

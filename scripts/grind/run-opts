@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# run-opts — the /grind quick-start flags, stored where every window finds them.
+#
+#   run-opts set [--until HH:MM|ISO] [--no-chain] [--max-concurrent N]
+#       write state.json .run_opts (once, at Step 0 of a fresh run). --until is
+#       resolved to an absolute local time now, so a window resumed after
+#       midnight does not roll it to the next day. quota-gate honours
+#       .run_opts.hard_stop_at (STOP_WEEKLY) and .run_opts.chain (--next-window).
+#   run-opts show
+#       print the effective values: until, chain, max_concurrent (run_opts
+#       first, else config.sh / project.conf).
+#
+# Exit: 0 ok, 1 bad argument.
+set -o pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 1
+. "$HERE/config.sh"; . "$HERE/lib.sh"
+mkdir -p "$GRIND_DIR"
+
+cmd="${1:-show}"; shift || true
+case "$cmd" in
+  set)
+    until=""; chain=true; maxc=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --until) until="$(grind_gj resolve-until "${2:-}")" || { echo "run-opts: bad --until '${2:-}'" >&2; exit 1; }; shift 2 ;;
+        --until=*) until="$(grind_gj resolve-until "${1#--until=}")" || { echo "run-opts: bad --until '${1#--until=}'" >&2; exit 1; }; shift ;;
+        --no-chain) chain=false; shift ;;
+        --max-concurrent) maxc="${2:-}"; shift 2 ;;
+        --max-concurrent=*) maxc="${1#--max-concurrent=}"; shift ;;
+        *) echo "run-opts: unknown flag '$1'" >&2; exit 1 ;;
+      esac
+    done
+    case "$maxc" in ''|*[!0-9]*) [ -n "$maxc" ] && { echo "run-opts: --max-concurrent needs a number" >&2; exit 1; } ;; esac
+    json="{\"chain\": $chain"
+    [ -n "$until" ] && json="$json, \"hard_stop_at\": \"$until\""
+    [ -n "$maxc" ] && json="$json, \"max_concurrent\": $maxc"
+    json="$json}"
+    grind_state_set run_opts "$json"
+    grind_audit "run_opts" "$json"
+    "$0" show
+    ;;
+  show)
+    until="$(grind_state_get run_opts.hard_stop_at)"
+    chain="$(grind_state_get run_opts.chain)"
+    maxc="$(grind_state_get run_opts.max_concurrent)"
+    case "$chain" in False|false|0) chain=off;; *) chain=on;; esac
+    echo "run_opts: until=${until:-${GRIND_HARD_STOP_AT:-none}} chain=${chain} max_concurrent=${maxc:-$GRIND_MAX_CONCURRENT}"
+    ;;
+  *) echo "usage: run-opts set [--until HH:MM] [--no-chain] [--max-concurrent N] | show" >&2; exit 1 ;;
+esac

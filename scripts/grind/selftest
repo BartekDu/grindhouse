@@ -163,6 +163,29 @@ expect_rc "quota-gate POLL_FAILED via broken adapter" 6 env GRIND_QUOTA_TOOL="$T
 u="$(GRIND_NOW=$NOW GJ resolve-until 23:59)"
 [ -n "$u" ] && ok "resolve-until HH:MM -> absolute ISO ($u)" || bad "resolve-until failed"
 
+# ---------- 4b. quick-start run options, project rules, wave brief ----------
+expect_rc "run-opts set (--until --no-chain --max-concurrent)" 0 env GRIND_NOW=$NOW bash "$G/run-opts" set --until 23:59 --no-chain --max-concurrent 2
+o="$(bash "$G/run-opts" show)"
+case "$o" in "run_opts: until=20"*" chain=off max_concurrent=2") ok "run-opts show: stored + effective ($o)";; *) bad "run-opts show: '$o'";; esac
+expect_rc "run-opts rejects unknown flag" 1 bash "$G/run-opts" set --bogus
+expect_rc "run-opts rejects non-numeric --max-concurrent" 1 bash "$G/run-opts" set --max-concurrent x
+rd 45 20 > "$R"
+expect_rc "quota-gate --next-window honours stored --no-chain" 3 QG --next-window
+GJ set .claude/grind/state.json run_opts '{}'
+o="$(bash "$G/run-opts" show)"
+case "$o" in *"chain=on max_concurrent=4") ok "run-opts defaults from config.sh";; *) bad "run-opts defaults: '$o'";; esac
+rm -f .claude/grind/rules.md
+o="$(bash "$G/rules-init" | tail -1)"
+[ "$o" = "skeleton" ] && [ -f .claude/grind/rules.md ] && ok "rules-init creates the skeleton" || bad "rules-init: '$o'"
+echo "- parts fit 240 mm" >> .claude/grind/rules.md
+o="$(bash "$G/rules-init" | tail -1)"
+[ "$o" = "rules: 1" ] && ok "rules-init keeps existing rules (never overwrites)" || bad "rules-init after edit: '$o'"
+rm -f .claude/grind/rules.md
+o="$(GRIND_BRIEF_TOOL="$TMP/none.py" bash "$G/wave-brief")"; rc=$?
+case "$rc:$o" in "0:task deadline"*"skipped"*) ok "wave-brief advisory: deadline + skip without cc-brief (rc 0)";; *) bad "wave-brief: rc=$rc '$o'";; esac
+d="$(GRIND_NOW=$NOW GJ deadline 10)"
+[ "$d" = "2027-01-15T08:10:00Z" ] && ok "deadline: now + N min in UTC" || bad "deadline: '$d'"
+
 # ---------- 5. scope-guard ----------
 echo z >> src/api/a.txt && git add src/api/a.txt
 git commit -qm "api: in-focus change" && ok "scope: in-focus commit passes" || bad "scope: in-focus commit blocked"

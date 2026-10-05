@@ -16,6 +16,8 @@ through here. Stdlib only. Subcommands:
   next-window READINGS [HARD_STOP_AT] [STOP_BEFORE_WEEK_RESET_MIN]
                                            "CHAIN <epoch> <local-iso>" (next 5h reset) or "NO_CHAIN <reason>" (exit 3)
   resolve-until HH:MM|ISO                  absolute local ISO time of the next HH:MM (for state.json .run_opts)
+  deadline [MINUTES]                       UTC time MINUTES (default 10) from now, for a brief's hard deadline
+  wave-brief CC_BRIEF_PY                   advisory budget lines from cc-brief --latest --json (exit 0 always)
   cache-write FILE FH WK [WM]              write {five_hour_pct_left,week_pct_left,week_model_pct_left,ts}
   cache-read  FILE                         print "FH WK WM TS"
   audit-append FILE EVENT [DATA]           append a hash-chained audit line
@@ -217,6 +219,40 @@ def _resolve_until(spec):
     return datetime.fromtimestamp(e).astimezone().isoformat(timespec="minutes")
 
 
+def _wave_brief(tool):
+    """Advisory lines from cc-ledger's cc-brief for the newest session of this
+    project (Claude Code keeps it in ~/.claude/projects/<cwd with every
+    non-alphanumeric as '-'>; falls back to the newest session anywhere)."""
+    import re
+    import subprocess
+    if not os.path.isfile(tool):
+        return ["wave-brief: skipped (no cc-brief at %s; advisory only)" % tool]
+    pdir = os.path.join(os.path.expanduser("~"), ".claude", "projects",
+                        re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
+    cmd = [sys.executable, tool, "--latest"] + ([pdir] if os.path.isdir(pdir) else []) + ["--json"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120).stdout
+        b = json.loads(out)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ["wave-brief: skipped (cc-brief gave no JSON; advisory only)"]
+    w = b.get("window") or {}
+    head = "wave-brief (advisory): spent $%.2f (agents $%.2f over %s agents)" % (
+        b.get("spent_usd") or 0, b.get("agents_usd") or 0, b.get("agents") or 0)
+    if w:
+        head += " | 5h %s%% used, resets in %s min" % (w.get("five_hour_used"), w.get("resets_in_min"))
+        if w.get("usd_left") is not None:
+            head += ", ~$%.0f left" % w["usd_left"]
+    lines = [head]
+    for a in b.get("big_agents") or []:
+        if (a.get("requests") or 0) > 100:
+            lines.append("  big agent: %s, %s requests, $%.2f -> split such tasks, paste excerpts into the brief"
+                         % (a.get("label") or "?", a.get("requests"), a.get("usd") or 0))
+    for f in (b.get("reread_files") or [])[:5]:
+        lines.append("  re-read %sx: %s -> paste the needed excerpt into the next brief"
+                     % (f.get("reads"), f.get("file")))
+    return lines
+
+
 def main(argv):
     # On Windows, text-mode stdout translates \n -> \r\n; the trailing \r then
     # corrupts bash `read` / `$(( ))` consumers. Force LF-only stdout.
@@ -302,6 +338,14 @@ def main(argv):
         except (ValueError, IndexError):
             print("")
             sys.exit(1)
+
+    elif cmd == "deadline":
+        m = float(argv[1]) if len(argv) > 1 else 10.0
+        print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(_now() + m * 60)))
+
+    elif cmd == "wave-brief":
+        for ln in _wave_brief(argv[1] if len(argv) > 1 else ""):
+            print(ln)
 
     elif cmd == "cache-write":
         _atomic_write(
