@@ -207,6 +207,11 @@ out="$(QG)"; case "$out" in "GO five_hour_left=55 week_left=80 week_model_left=8
 out="$(QG)"; case "$out" in *"week_model_left=-1 "*) ok "stale oauth per-model value is not carried";; *) bad "stale carry: '$out'";; esac
 { rdo 20 300 -604800; rd 45 20 60; } > "$R"
 out="$(QG)"; case "$out" in *"week_model_left=-1 "*) ok "per-model value from another week is not carried";; *) bad "other-week carry: '$out'";; esac
+# near-simultaneous readings (status line + probe) that round differently: the worse one wins
+{ rdo 20 1 | sed 's/"week_used": 20/"week_used": 23/'; rd 45 20 1; } > "$R"
+out="$(QG)"; case "$out" in "GO five_hour_left=50 week_left=77 "*) ok "near-simultaneous readings: worse 5h and week value taken";; *) bad "worst-of: '$out'";; esac
+{ rdo 20 200 | sed 's/"week_used": 20/"week_used": 23/'; rd 45 20 1; } > "$R"
+out="$(QG)"; case "$out" in "GO five_hour_left=55 week_left=80 "*) ok "older reading (200 s) does not override the newest one";; *) bad "worst-of control: '$out'";; esac
 rd 45 20 60 > "$R"
 out="$(PG env)"; rc=$?
 [ "$rc" = 0 ] && [ "$(calls)" = 1 ] && case "$out" in *"week_model_left=80 "*) true;; *) false;; esac \

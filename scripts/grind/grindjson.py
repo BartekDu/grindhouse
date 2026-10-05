@@ -112,27 +112,52 @@ def _hard_stop_epoch(spec, now):
     return best
 
 
-def _latest_reading(path, with_model=False):
-    """Record with the greatest `t` from the tail of the readings file (concurrent
-    sessions can interleave lines, so the last line is not always the newest).
-    Corrupt or partial lines are skipped. Raises OSError if the file is missing.
-    with_model=True: only records that carry "week_model_used" count."""
+def _readings(path):
+    """Valid records from the tail of the readings file. Corrupt or partial lines
+    are skipped. Raises OSError if the file is missing."""
     with open(path, "rb") as f:
         f.seek(0, 2)
         f.seek(max(0, f.tell() - 65536))
         lines = f.read().splitlines()
-    best = None
+    out = []
     for ln in lines:
         try:
             o = json.loads(ln.decode("utf-8"))
-            t = float(o["t"])
-            float(o["five_hour_used"]), float(o["week_used"])
+            float(o["t"]), float(o["five_hour_used"]), float(o["week_used"])
         except (ValueError, KeyError, TypeError, UnicodeDecodeError):
             continue
+        out.append(o)
+    return out
+
+
+def _latest_reading(path, with_model=False):
+    """Record with the greatest `t` (concurrent sessions can interleave lines, so the
+    last line is not always the newest). with_model=True: only records that carry
+    "week_model_used" count."""
+    best = None
+    for o in _readings(path):
         if with_model and o.get("week_model_used") is None:
             continue
-        if best is None or t > float(best["t"]):
+        if best is None or float(o["t"]) > float(best["t"]):
             best = o
+    return best
+
+
+NEAR_SEC = 30   # readings this close to the newest one describe the same moment
+
+
+def _worst_used(path, r, key):
+    """The highest `key` among readings within NEAR_SEC of r from the same 5h window.
+    The status line and the probe round differently (seen: week 2% vs 3% 0.2 s apart);
+    the gate takes the worse value."""
+    best = float(r[key]); t = float(r["t"]); fr = _epoch(r.get("five_hour_resets_at"))
+    for o in _readings(path):
+        if abs(float(o["t"]) - t) > NEAR_SEC:
+            continue
+        of = _epoch(o.get("five_hour_resets_at"))
+        if fr is not None and of is not None and abs(of - fr) > 300:
+            continue
+        best = max(best, float(o[key]))
     return best
 
 
@@ -172,7 +197,7 @@ def _quota_read(argv):
     fr = _epoch(r.get("five_hour_resets_at"))
     if fr is not None and now >= fr:
         return "FAIL reading predates the 5h reset", 1
-    fh, wk = _left(r["five_hour_used"]), _left(r["week_used"])
+    fh, wk = _left(_worst_used(path, r, "five_hour_used")), _left(_worst_used(path, r, "week_used"))
     wm = r.get("week_model_used")
     if wm is None:
         # The status line has no per-model bar; the probe (source=oauth) has. Carry the
