@@ -1,7 +1,7 @@
 # grindhouse
 
 The GRIND ENGINE and its works — canonical home of the guardrail law scripts and
-the seven-skill family that turns a Claude Code machine into a virtual
+the six-skill family that turns a Claude Code machine into a virtual
 development office.
 
 ```
@@ -12,7 +12,6 @@ GRIND ENGINE (scripts/grind/* law, .claude/grind/ per-repo state, 5h windows, au
                  team manifest → waves in worktrees → DONE = STOP
 supporting cast
  ├ /soft-pause   drain-to-savepoint pause; power-cut recovery (quota-gate exit 7)
- ├ /quota        usage reader (5h / week / per-model week) + PAUSE precaution
  ├ /grind-office read-only dashboard — the office at a glance
  └ /culture      the development-culture framework (seed + audit)
 ```
@@ -22,7 +21,7 @@ supporting cast
 | Path | What |
 |---|---|
 | `scripts/grind/` | **The law.** quota-gate (floor/weekly/model-weekly/reserve/kill/PAUSE), scope-guard (focus globs + worktree law, pre-commit), landable-guard (pre-push), commit-msg-guard (commit-msg, conventional messages), value-gate, verify-run (per-repo `verify-cmds`, else auto-detected gates), lock, hygiene-check, cost-table, audit-verify (hash chain), swarm-claim (gh-issue ownership board), selftest (the whole matrix, no network/auth), grindjson.py, grind-bootstrap.sh |
-| `skills/<name>/` | The seven skills (SKILL.md policy files + helpers; `skills/quota/` carries the `claude_usage.py` backup) |
+| `skills/<name>/` | The six skills (SKILL.md policy files + helpers) |
 | `install.sh` | Sync this repo → `~/.claude/skills` (the live install) |
 
 ## Per-repo configuration (all optional)
@@ -32,15 +31,19 @@ target repo, never in the scripts:
 
 - `<repo>/.claude/grind/project.conf` — shell vars sourced by `config.sh`:
   `GRIND_BASE_BRANCH`, `GRIND_PROTECTED_BRANCHES`, `GRIND_EXTRA_IGNORES`,
-  `GRIND_VALUE_EXTRA_RE`. Example for Underline:
+  `GRIND_VALUE_EXTRA_RE`, `GRIND_QUOTA_READINGS`, `GRIND_HARD_STOP_AT`,
+  `GRIND_STOP_BEFORE_WEEK_RESET_MIN`, `GRIND_QUOTA_TOOL`. Example for Underline:
   `docs/examples/underline.project.conf`.
 - `<repo>/.claude/grind/verify-cmds` — one verification command per line
   (`#` comments). When absent, `verify-run` auto-detects gates from the project
   type (npm/yarn/pnpm scripts, pytest/ruff/mypy, cargo, go, manage.py,
   `make test`); when NOTHING is detectable it exits 3 (= UNVERIFIED, not green).
+- `<repo>/.claude/grind/rules.md` — the project's hard constraints (size limits,
+  network exceptions, ...). The orchestrator pastes it into every builder and
+  verifier brief; `/grind` Step 0 creates a skeleton when it is missing.
 
 Prove the law after any change: `bash scripts/grind/selftest` (no network, no
-Claude auth — quota-gate runs against a faked cache). CI runs the same matrix
+Claude auth — quota-gate runs against fixture statusline readings). CI runs the same matrix
 on every push/PR on ubuntu + windows git-bash
 (`.github/workflows/selftest.yml`) — a fix that lands on one OS can no longer
 silently regress the other.
@@ -54,12 +57,14 @@ silently regress the other.
   `cp -f scripts/grind/* <repo>/scripts/grind/`, but NEVER copy
   `grind-bootstrap.sh` into a product repo (it is the global entrypoint that
   RESOLVES repo-local vs global; inside a repo it has no meaning).
-- **Quota tool:** `skills/quota/claude_usage.py` IS the executed tool —
-  `install.sh` ships it to `~/.claude/skills/quota/`, grind's `config.sh`
-  auto-resolves `GRIND_QUOTA_TOOL` (repo-vendored copy wins, else the installed
-  skill; env/project.conf override), and the background loggers (Linux systemd
-  timer in `skills/quota/systemd/`, Windows `ClaudeQuotaLog` task) invoke the
-  installed copy. The old 4-place desktop-path coupling is dead.
+- **Quota source:** the statusline readings that cc-ledger's `cc-statusline.py`
+  appends to `~/.claude/tools/cc-quota.readings.jsonl` (contract: cc-ledger
+  `docs/READINGS.md`; parser: `grindjson.py quota-read`). Install cc-ledger's
+  status line, or no grind can start (the gate fails closed with POLL_FAILED).
+  There are no readings in headless `claude -p` runs. `GRIND_QUOTA_TOOL` is an
+  optional adapter for another source. The old `/quota` skill (nested
+  `claude /usage` poll) is retired; `install.sh` backs up and removes an old
+  install.
 
 ## Constitution (from /culture — applies to this repo too)
 

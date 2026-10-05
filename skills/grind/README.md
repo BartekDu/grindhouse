@@ -2,7 +2,7 @@
 
 These two skills are installed **machine-globally** (`~/.claude/skills/grind/`,
 `~/.claude/skills/semi-grind/`) so they're invocable from any repo on this machine.
-`/quota` is likewise global and self-contained.
+Quota comes from the statusline readings (cc-ledger `cc-statusline.py`), not a skill.
 
 ## How "global" works
 
