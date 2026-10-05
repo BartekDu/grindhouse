@@ -1,7 +1,7 @@
 ---
 name: grind
 preamble-tier: 3
-version: 1.1.0
+version: 1.2.0
 description: |
   Autonomous "run to the quota floor" work loop. Runs a session DOWN TO the 5h
   usage-quota floor generating SAFE, in-focus work — instead of stopping when a
@@ -13,7 +13,8 @@ description: |
   dated campaign branch + per-feature branches; fans out a standard agent council
   and tables every concurrent session.
   Use when asked to "grind", "use the quota", "run to the limit", "burn the
-  window", or "/grind [focus]". NOT for a specific task list (that = do-and-stop).
+  window", or "/grind [focus] [--until HH:MM] [--no-chain] [--max-concurrent N]".
+  NOT for a specific task list (that = do-and-stop).
 triggers:
   - grind
   - use the quota
@@ -36,6 +37,14 @@ allowed-tools:
 
 **Contract:** `/grind [focus]` = run-to-floor and generate safe work. A plain task
 list = do-exactly-that-and-stop. Never confuse the two.
+
+**Quick start:** `/grind <focus> [--until HH:MM] [--no-chain] [--max-concurrent N]`.
+`--until` = campaign hard stop (from then on the gate answers STOP_WEEKLY, no further
+window); `--no-chain` = this window only; `--max-concurrent` = fan-out cap for this run
+(default `GRIND_MAX_CONCURRENT`). Step 0 stores them with `bash $G/run-opts set ...` in
+`state.json .run_opts`, so every resumed window honours them. The working rules learned
+from past campaigns (staffing, briefs, checks, waves) are in
+`scripts/grind/profile.md` (`$G/profile.md`) — read it at Step 0; this file cites it.
 
 ## THE NO-STOP LAW (repeat the mantra in every message during a grind)
 
@@ -110,41 +119,63 @@ On a cron-resumed window, SKIP straight to loading the stored focus + branches f
 4. **Gitignore hygiene first.** Run `bash $G/hygiene-check fix` — it appends any missing scratch-noise ignores (`.claude/worktrees/`, `*.tmp`, grind's volatile state files, + `GRIND_EXTRA_IGNORES` from `project.conf`) to `.gitignore`. If it added entries, commit `.gitignore` on the campaign branch **before any other work** (`chore: gitignore scratch noise (worktrees, tmp)`). This is why the loop never resurfaces the 455-untracked-file mess.
 4b. **Swarm board (team player, cross-checkout).** `bash $G/swarm-claim.sh check` — exit 2 means a LIVE foreign swarm (another user/machine) owns overlapping focus globs: narrow your globs or negotiate via a comment on the conflicting `swarm-claim` issue; never bulldoze. On CLEAR: `bash $G/swarm-claim.sh claim` to post yours. Treat foreign claims like your own `forbidden_globs`. (`LOCAL_ONLY` = no gh/remote — same-machine concurrency is already covered by lock.sh + the run-log table; proceed.)
 4c. **Knowledge graph freshness.** If `graphify-out/graph.json` exists: refresh it when behind HEAD (`graphify <repo> --update`) and ensure the post-commit rebuild hook is armed (`graphify hook install` — it appends; no conflict with scope-guard/landable-guard). If absent, note it in the transparency print (grind proceeds; scouts fall back to grep) — building a first graph is the founder's call, not a window task.
-5. **Transparency — print before going autonomous:** the focus label + the **campaign branch** + the planned **feature branches** + allowed/forbidden globs + the ordered work plan (the ladder, filtered to focus) + floor/cap (`config.sh`) + "stop conditions: quota floor, human-gate, or work-exhausted." Plus the **concurrency table** (below). The founder approves the shape, then can walk away.
+5. **Transparency — print before going autonomous:** the focus label + the **campaign branch** + the planned **feature branches** + allowed/forbidden globs + the ordered work plan (the ladder, filtered to focus) + floor/cap (`config.sh`) + the `run-opts show` line + the first gate line (`src=statusline age=…`) + the `/effort high` + `/autocompact 200k` reminder + "stop conditions: quota floor, human-gate, or work-exhausted." Plus the **concurrency table** (below). The founder approves the shape, then can walk away.
+4d. **Run options + profile + project rules.** Fresh run: `bash $G/run-opts set` with the
+   quick-start flags the user gave (none = defaults); a resumed window only runs
+   `bash $G/run-opts show`. Read `$G/profile.md`. Run `bash $G/rules-init`: it creates
+   `.claude/grind/rules.md` as a skeleton if missing; when it says `skeleton`, ask the
+   founder (before going autonomous) for the project's hard constraints and write them in.
+   That file is pasted verbatim into every builder and verifier brief.
+4e. **Session settings + quota source.** Print for the founder: "Run `/effort high` and
+   `/autocompact 200k` in this session now" — agents started with the `Agent` tool inherit
+   the session's effort (see Model + effort). Run `bash $G/quota-gate.sh` once: it reads the
+   newest statusline reading (`GRIND_QUOTA_READINGS`; cc-ledger `cc-statusline.py` must be
+   the status line). The per-model weekly bar is not in those readings: ask the founder to
+   check `/usage` once by hand (profile.md § Orchestrator session).
 6. Acquire the window: `bash $G/lock.sh acquire <window_id>` (refuses on dirty tree / existing lock / failing gitignore hygiene). This writes `.active`, which arms the scope-guard pre-commit hook.
 
 ## Concurrency + agent council (STANDARD PRACTICE)
 
-When the loop fans out, it uses this **standard council** and **tables every concurrent session** so the founder can see, at a glance, who is doing what. Concurrency is at the **feature level**: each concurrent builder owns ONE `grind/feat/<slug>` branch in its OWN worktree (disjoint write-scope), up to `MAX_CONCURRENT` (config, default 4).
+When the loop fans out, it uses this **standard council** and **tables every concurrent session** so the founder can see, at a glance, who is doing what. Concurrency is at the **feature level**: each concurrent builder owns ONE `grind/feat/<slug>` branch in its OWN worktree (disjoint write-scope), up to the run's `max_concurrent` (`bash $G/run-opts show`; default `GRIND_MAX_CONCURRENT` in config.sh).
 
 **Standard council composition:**
 | Role | Count | Branch / scope | Job |
 |---|---|---|---|
 | **Orchestrator** | 1 (the main `/grind` session) | `grind-DD-MM-YYYY` | quota gate, branch model, dispatch, the concurrency table, merge verified feature branches → campaign, state/audit |
-| **Builder** | 1 per concurrent feature-slice (≤ MAX_CONCURRENT) | `grind/feat/<slug>` (own worktree) | implement the slice; commit per task (scope-guarded, conventional msgs); report `ready` |
+| **Builder** | 1 per concurrent feature-slice (≤ the run's max_concurrent) | `grind/feat/<slug>` (own worktree) | implement the slice; commit per task (scope-guarded, conventional msgs); report `ready` |
 | **Verifier** | 1 per builder (cheap, adversarial) | read-only on the builder's branch | run the NON-interactive gates: `bash $G/verify-run` (explicit `.claude/grind/verify-cmds`, else auto-detected test/lint/typecheck for the project type) — plus a `/codex` pass-fail where installed — before the orchestrator merges; a builder branch merges only on a clean verifier pass. `verify-run` exit 3 = NO gates detected → the branch is UNVERIFIED, not green: add gates or log it loudly |
 | **Scout** | 1, when the in-focus queue runs low | read-only | refresh the in-focus backlog candidates (next grindable tasks) so the loop never idles early while quota remains — **graphify-query first** (see Context acquisition), grep only as fallback |
 
-### Model + effort — explicit on EVERY dispatch
+### Model + effort — set what the API allows
 
-Every `Agent` call and every Workflow `agent()` call sets BOTH `model` and `effort`.
-An agent with no `effort` inherits the orchestrator session's effort, and a grind
-session usually runs at `max`.
+The `Agent` tool takes `model` but has **no `effort` parameter**: every agent it starts
+inherits the orchestrator session's effort. So the orchestrator session itself runs at
+`/effort high` (plus `/autocompact 200k`); Step 0 prints that for the founder to type.
+Workflow `agent()` calls do take `effort`: set it there from this table.
 
 | Role | Model | Effort |
 |---|---|---|
 | design, architecture, critique, review of a plan | opus/fable | high (max only when the founder asks) |
 | builder, fix round | as staffed per package | high |
 | verifier, re-verifier, reviewer of merged work | sonnet | high |
-| scout, log trawl | sonnet | medium |
+| scout, log trawl | sonnet | medium (Workflow `agent()` only; an `Agent` scout runs at the session's high) |
 
 Incident (2026-09-27, session `6c5ee3ea`, $655): 58 Sonnet agents (builders,
-verifiers, fixers, scouts) had no `effort` and ran at the inherited `max` — about
-$240 of the session. Sonnet builders at `max` cost $11.21 per package against $2.72
-at `high`, and passed first-pass verify less often (5 of 8 vs 12 of 16; cc-ledger
-fixed 2026-10-05). Lowering a builder below `high` is a quality experiment, not a
-default: Opus builders pass 21 of 27 at `high` against 8 of 13 at `medium`. Check
-`/ledger quality` after a wave before changing this table.
+verifiers, fixers, scouts) ran at the inherited `max` — about $240 of the session.
+Sonnet builders at `max` cost $11.21 per package against $2.72 at `high`, and passed
+first-pass verify less often (5 of 8 vs 12 of 16; cc-ledger fixed 2026-10-05).
+Lowering a builder below `high` is a quality experiment, not a default: Opus builders
+pass 21 of 27 at `high` against 8 of 13 at `medium`. Check `/ledger quality` after a
+wave before changing this table, and never A/B builders inside a production grind
+(profile.md § Waves).
+
+### Every brief carries the project rules + profile
+
+Each builder, verifier and fixer brief gets: `.claude/grind/rules.md` pasted verbatim,
+the task's absolute UTC deadline (printed by `wave-brief`), and the brief rules in
+`$G/profile.md` § Every brief and § Checks (fail-closed checks with a control case
+that must trigger; the verifier also diffs changed documents; reports in the
+project's language).
 
 ### Context acquisition — graph-first (inject into EVERY scout/builder/verifier prompt)
 
@@ -195,17 +226,26 @@ Repeat until a STOP:
      savepoint (finish current task → commit; workflows park at their journal), then run the
      soft-pause settle steps (RESUME.md, `/context-save`, `swarm-claim.sh release`,
      `lock.sh release`) and STOP the turn. Do NOT kill units mid-task; do NOT start anything new.
-   - `2 STOP_FLOOR` / `3 STOP_WEEKLY` / `5 STOP_KILL` / `6 POLL_FAILED` → go to Window-end.
-     (`STOP_WEEKLY` also fires on the PER-MODEL weekly bar, e.g. the Fable week — it usually
-     exhausts first.) Do NOT poll quota yourself or reinterpret the number — the script
-     rate-limits + caches; trust it.
+   - `6 POLL_FAILED` → no fresh statusline reading (the status line records while this
+     session is active). Do one ordinary turn of work that needs no new task (update the
+     concurrency table, check a running agent), then run the gate ONCE more; a second
+     `POLL_FAILED` → Window-end.
+   - `2 STOP_FLOOR` / `3 STOP_WEEKLY` / `5 STOP_KILL` → go to Window-end.
+     (`STOP_WEEKLY` also fires on the campaign hard stop — `--until`, `GRIND_HARD_STOP_AT`,
+     `GRIND_STOP_BEFORE_WEEK_RESET_MIN` — and on the per-model weekly bar when a reading
+     carries it.) Do NOT read quota yourself or reinterpret the number — trust the script.
+1b. **Wave brief (advisory, before each dispatch wave):** `bash $G/wave-brief`. It prints
+   the UTC deadline for this wave's briefs, the $ left in the window, agents past 100
+   requests (split such tasks) and files read over and over (paste the excerpt into the
+   brief). It never blocks; the floor stays the gate's job. After a wave that changed
+   the staffing, run `/ledger quality` (profile.md § Waves).
 2. **Pick next work** by ladder (first non-empty tier, ALL filtered to the focus globs):
    - **(a)** explicit `state.json` tasks whose `depends_on` are met;
    - **(b)** approved backlog — `TODOS.md` items + finishing open PRs **inside focus**;
    - **(c)** always-safe tech-debt inside focus — add tests / raise coverage, build the `!!! TRAP !!!` → TRAPS.md index, observability backfill, lint/type hardening;
    - **(d)** → Floor activity.
      For (b)/(c), first pass the value gate: `bash $G/value-gate "<justification naming an objective win>"` (a closed backlog id, a coverage increase, or a lint/type-error decrease). REJECT → skip the task + log it; do not do unjustifiable busywork.
-3. **Execute on a `grind/feat/<slug>` branch.** Small tasks inline; independent tasks fan out per the council (builders on disjoint-scope worktrees, ≤ MAX_CONCURRENT). Commit per task onto the feature branch — the **scope-guard pre-commit hook rejects out-of-focus paths**, so a blocked commit means you strayed: narrow, don't widen the focus. Each commit message is conventional `<scope>: <subject>` (the **commit-msg-guard hook enforces it** during a window), with a why-body when non-obvious + the task id (e.g. `Task: T-07`). NEVER ship opaque messages (`wip`, `stuff`, `fixes`, `misc`).
+3. **Execute on a `grind/feat/<slug>` branch.** Small tasks inline; independent tasks fan out per the council (builders on disjoint-scope worktrees, ≤ the run's max_concurrent). Commit per task onto the feature branch — the **scope-guard pre-commit hook rejects out-of-focus paths**, so a blocked commit means you strayed: narrow, don't widen the focus. Each commit message is conventional `<scope>: <subject>` (the **commit-msg-guard hook enforces it** during a window), with a why-body when non-obvious + the task id (e.g. `Task: T-07`). NEVER ship opaque messages (`wip`, `stuff`, `fixes`, `misc`).
 4. **Verify then merge.** A builder's feature branch merges into the campaign branch only after its Verifier passes (`bash $G/verify-run` clean). Update the concurrency table (`ready`→`merged`).
 5. **Leave the tree clean.** After each task: `git status` empty of stray untracked files (commit real work, or ignore scratch via `bash $G/hygiene-check fix`). The between-task invariant is a boring, clean `git status`.
 6. **Record cost.** If you have a fresh pre/post quota delta, `bash $G/cost-table record <TASK_TYPE> <DELTA_PCT>`. Update `state.json` (atomic) + append `run-log.md`.
@@ -222,11 +262,20 @@ When the ladder is dry (no in-focus tasks pass the value gate), write ONE `.clau
 
 ## Window-end
 
-1. `bash $G/quota-gate.sh --force` to take a fresh reading; **log the exact `five_hour_pct_left` + `week_pct_left` + stop-reason** (`floor`/`weekly`/`work-exhausted`/`max-windows`/`human-gate`/`kill`) to `run-log.md` and `state.json.stop_log`. (`grind_audit` also records it in the tamper-evident log.)
+1. `bash $G/quota-gate.sh` for the final reading; **log the exact `five_hour_pct_left` + `week_pct_left` + stop-reason** (`floor`/`weekly`/`work-exhausted`/`max-windows`/`human-gate`/`kill`) to `run-log.md` and `state.json.stop_log`. (`grind_audit` also records it in the tamper-evident log.)
 2. Commit any WIP onto its `grind/feat/<slug>` branch; merge clean+verified feature branches into the campaign branch; refresh the knowledge graph if present (`graphify <repo> --update`); confirm `git status` is clean (`bash $G/hygiene-check verify`). Regenerate `RESUME.md` (where we are / next / open gates) + the final concurrency manifest.
 3. `bash $G/lock.sh release`. Swarm board: **chaining** → `bash $G/swarm-claim.sh renew`; **stopping for good** (weekly/kill/work-exhausted/max-windows) → `bash $G/swarm-claim.sh release` — a parked swarm that hoards globs is not a team player.
 4. **The campaign branch is the reviewable unit; the founder opens the PR.** Do NOT push to a protected branch and do NOT auto-open or auto-merge. Surface in the end report: the campaign branch, the feature branches + their commit counts, the concurrency manifest, and "ready for you to open a PR `grind-DD-MM-YYYY` → `<base>` (gates blocked: …)" if any gates are open. Pushing the campaign/feature branches to origin is fine; opening/merging the PR is the founder's call.
-5. **Chain?** Only if `window_counter < MAX_WINDOWS` AND in-focus work remains AND not STOP_WEEKLY/STOP_KILL: `CronCreate` the next window at the 5h reset time with the resume prompt (loads focus + branches from state.json, skips Step 0), `state_set '.window_counter += 1'`, then STOP this turn. Else STOP and surface the status+gate report — do not chain.
+5. **Chain?** Only if `window_counter < MAX_WINDOWS` AND in-focus work remains AND not STOP_WEEKLY/STOP_KILL AND `bash $G/quota-gate.sh --next-window` answers `CHAIN <epoch> <local-time>` (it answers `NO_CHAIN` for `--no-chain`, or when the next window would start after the hard stop / before-week-reset stop). Then `CronCreate` the next window at that local time with the resume prompt below, `state_set '.window_counter += 1'`, and STOP this turn. Else STOP and surface the status+gate report — do not chain.
+
+   Resume prompt (the `[grind-resume]` marker is required: cron prompts pass through
+   UserPromptSubmit hooks, and cc-ledger's pause-guard lets only marked prompts through):
+
+   ```text
+   [grind-resume] /grind resume: source ~/.claude/skills/grind/scripts/grind/grind-bootstrap.sh;
+   read .claude/grind/RESUME.md and .claude/grind/state.json (focus, branches, run_opts);
+   then bash $G/quota-gate.sh; then bash $G/wave-brief; then continue the loop.
+   ```
 6. **Campaign-end retro (optional, founder-present only):** offer `/retro` — learnings → `/learn`; any taste answers or recurring gate patterns → `RULE-NNN` candidates for the next `/semi-grind`. The office that learns; never run it into an empty room.
 
 ## Hard rules (never, under any quota pressure)
@@ -248,7 +297,8 @@ When the ladder is dry (no in-focus tasks pass the value gate), write ONE `.clau
 - **Never** answer an interactive skill's questions for the founder — log a gate.
 - **Never** grep-sweep for structure when `graphify-out/graph.json` exists — graphify-query first; grep confirms lines, it doesn't explore.
 - **Never** dispatch a builder task that won't reach a commit within ~10 minutes — decompose it; savepoints are what make `/soft-pause` and power cuts cheap.
-- **Never** dispatch an agent without an explicit `model` and `effort` — an omitted effort inherits the session's (usually `max`).
+- **Never** dispatch an agent without an explicit `model`; set `effort` wherever the call takes it (Workflow `agent()`); the `Agent` tool inherits the session's effort, so the orchestrator runs at `/effort high`.
+- **Never** send a builder or verifier brief without `.claude/grind/rules.md` pasted in and an absolute UTC deadline.
 - **Never** kill units on quota-gate exit 7 (SOFT_PAUSE) — drain each to its savepoint, settle, park.
 - **Never** proceed past a `swarm-claim.sh check` exit 2 — narrow globs or negotiate on the issue; foreign claims = your forbidden_globs.
 - **Always** cut the dated campaign branch from the base branch (`grind_base_branch`) + feature branches from the campaign branch; store them in `state.json` (`.campaign_branch`, `.sessions[]`); reuse (not re-cut) on cron windows.
