@@ -161,6 +161,8 @@ printf 'import json\nprint(json.dumps({"five_hour_pct_left": 55, "week_pct_left"
 expect_rc "quota-gate GO via GRIND_QUOTA_TOOL adapter" 0 env GRIND_QUOTA_TOOL="$TMP/tool.py" GRIND_QUOTA_READINGS="$TMP/none.jsonl" bash "$G/quota-gate.sh"
 printf 'raise SystemExit(1)\n' > "$TMP/tool.py"
 expect_rc "quota-gate POLL_FAILED via broken adapter" 6 env GRIND_QUOTA_TOOL="$TMP/tool.py" bash "$G/quota-gate.sh"
+rd 45 20 > "$R"
+expect_rc "quota-gate GRIND_READING_MAX_AGE_SEC from env makes a 59 s reading stale" 6 env GRIND_READING_MAX_AGE_SEC=30 GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$R" bash "$G/quota-gate.sh"
 # probe: stale / missing reading -> run GRIND_QUOTA_PROBE ONCE, re-read ONCE (fake probe; no network, no auth)
 cat > "$TMP/fakeprobe.py" <<'PROBE_EOF'
 import json, os, sys

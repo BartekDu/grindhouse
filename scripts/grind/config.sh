@@ -20,7 +20,7 @@ GRIND_MAX_WINDOWS=8             # auto-chain cap: founder-authorized 2026-06-03 
 GRIND_MAX_CONCURRENT=4         # fan-out cap: parallel feature-builders per window (disjoint scope each)
 GRIND_TASK_DEADLINE_MIN=10      # one builder task = one commit within this many minutes (savepoint);
                                 # wave-brief prints the absolute UTC deadline for the briefs
-GRIND_READING_MAX_AGE_SEC=900   # a reading older than this is stale (the gate runs GRIND_QUOTA_PROBE once, else POLL_FAILED);
+GRIND_READING_MAX_AGE_SEC="${GRIND_READING_MAX_AGE_SEC:-900}"   # (env or project.conf override) a reading older than this is stale (the gate runs GRIND_QUOTA_PROBE once, else POLL_FAILED);
                                 # the statusline re-records unchanged meters every 5 min while it runs
 
 # --- main-root anchor (define BEFORE the overrides + paths that use it) ---
