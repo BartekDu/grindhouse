@@ -6,7 +6,9 @@
 #
 # Source: the newest reading in GRIND_QUOTA_READINGS (cc-ledger's
 # cc-statusline.py records the 5h/week meters Claude Code hands the status
-# line). Optional adapter: GRIND_QUOTA_TOOL (a command printing
+# line; cc-usage-probe.py records them from the /usage endpoint, source="oauth").
+# With no fresh reading the gate first runs GRIND_QUOTA_PROBE once (see config.sh)
+# and re-reads once. Optional adapter: GRIND_QUOTA_TOOL (a command printing
 # {five_hour_pct_left, week_pct_left, week_model_pct_left} JSON).
 #
 # Usage:
@@ -28,8 +30,8 @@
 #   4  NO_NEW_TASK   — within reserve buffer, OR this TASK_TYPE won't fit; pick smaller / go to floor activity
 #   5  STOP_KILL     — kill switch present
 #   6  POLL_FAILED   — no fresh reading (missing file / stale / from before the 5h
-#                      reset; fail safe: treat as STOP). Caller: do one turn, retry
-#                      once; a second POLL_FAILED = Window-end.
+#                      reset) even after the one probe run; fail safe: treat as STOP.
+#                      Caller: do one turn, retry once; a second POLL_FAILED = Window-end.
 #   7  SOFT_PAUSE    — PAUSE sentinel present (/soft-pause): finish current task to its
 #                      savepoint (commit / journal write), then PARK — do not kill agents,
 #                      do not start anything new. Resume clears the sentinel.
@@ -82,12 +84,28 @@ if [ -n "$GRIND_QUOTA_TOOL" ]; then
   hs="$(grind_gj hard-stop "$HARD_STOP")"
 else
   src="statusline"
-  out="$(grind_gj quota-read "$GRIND_QUOTA_READINGS" "$GRIND_READING_MAX_AGE_SEC" "$HARD_STOP" "$GRIND_STOP_BEFORE_WEEK_RESET_MIN")"
-  if [ $? -ne 0 ]; then
-    grind_audit "quota_gate" "POLL_FAILED (src=statusline: ${out#FAIL }; failing safe to STOP)"
+  read_meters() { out="$(grind_gj quota-read "$GRIND_QUOTA_READINGS" "$GRIND_READING_MAX_AGE_SEC" "$HARD_STOP" "$GRIND_STOP_BEFORE_WEEK_RESET_MIN")"; }
+  read_meters; rc=$?
+  probe_note=""
+  if [ "$rc" -ne 0 ] && [ -n "$GRIND_QUOTA_PROBE" ]; then
+    # no fresh reading: ask the probe ONCE (any failure is ignored), then re-read ONCE
+    probe_script="${GRIND_QUOTA_PROBE%% --*}"; probe_args="${GRIND_QUOTA_PROBE#"$probe_script"}"
+    if [ -f "$probe_script" ]; then
+      case "$probe_script" in *.py) probe_cmd=("$GRIND_PYTHON" "$probe_script");; *) probe_cmd=("$probe_script");; esac
+      command -v timeout >/dev/null 2>&1 && probe_cmd=(timeout 30 "${probe_cmd[@]}")
+      # shellcheck disable=SC2086  # probe_args is a flag list, split on purpose
+      perr="$("${probe_cmd[@]}" $probe_args --readings "$GRIND_QUOTA_READINGS" 2>&1 >/dev/null)"; prc=$?
+      grind_audit "quota_probe" "rc=${prc} ${probe_script##*/}${perr:+ ($(printf '%s' "$perr" | head -n1 | cut -c1-120))}"
+      probe_note="; probe rc=${prc}"
+      read_meters; rc=$?
+    fi
+  fi
+  if [ "$rc" -ne 0 ]; then
+    grind_audit "quota_gate" "POLL_FAILED (src=statusline: ${out#FAIL }${probe_note}; failing safe to STOP)"
     echo "POLL_FAILED src=statusline ${out#FAIL }"; exit 6
   fi
-  read -r fh wk wm age hs <<< "$out"
+  read -r fh wk wm age hs src <<< "$out"      # src = the record's own source: statusline | oauth
+  src="${src:-statusline}"
 fi
 wm="${wm:--1}"; hs="${hs:-0}"
 # grind-office reads this snapshot (no gate run needed to show the bars)

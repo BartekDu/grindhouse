@@ -110,6 +110,7 @@ GJ set .claude/grind/state.json focus '{"label":"api","allowed_globs":["src/api/
 
 # ---------- 4. quota-gate: every exit code from fixture statusline readings ----------
 NOW=1800000000; R="$TMP/readings.jsonl"
+export GRIND_QUOTA_PROBE=""     # the probe is OFF unless a test turns it on (never the real ~/.claude/tools one)
 # rd FH_USED WK_USED [AGE_S] [EXTRA_JSON_FIELDS] -> one reading line (contract: cc-ledger docs/READINGS.md)
 rd() {
   printf '{"ts": "x", "t": %s, "five_hour_used": %s, "five_hour_resets_at": %s, "week_used": %s, "week_resets_at": %s, "session": "selftest", "source": "statusline"%s}\n' \
@@ -160,6 +161,46 @@ printf 'import json\nprint(json.dumps({"five_hour_pct_left": 55, "week_pct_left"
 expect_rc "quota-gate GO via GRIND_QUOTA_TOOL adapter" 0 env GRIND_QUOTA_TOOL="$TMP/tool.py" GRIND_QUOTA_READINGS="$TMP/none.jsonl" bash "$G/quota-gate.sh"
 printf 'raise SystemExit(1)\n' > "$TMP/tool.py"
 expect_rc "quota-gate POLL_FAILED via broken adapter" 6 env GRIND_QUOTA_TOOL="$TMP/tool.py" bash "$G/quota-gate.sh"
+# probe: stale / missing reading -> run GRIND_QUOTA_PROBE ONCE, re-read ONCE (fake probe; no network, no auth)
+cat > "$TMP/fakeprobe.py" <<'PROBE_EOF'
+import json, os, sys
+a = sys.argv[1:]
+d = os.environ["FAKE_PROBE_DIR"]
+open(os.path.join(d, "calls"), "a").write("x\n")
+if os.environ.get("FAKE_PROBE_FAIL"):
+    sys.stderr.write("fake probe: token expired\n"); sys.exit(4)
+now = int(os.environ["GRIND_NOW"])
+path = a[a.index("--readings") + 1]
+if "--write" in a:
+    open(path, "a").write(json.dumps({"ts": "x", "t": now - 2.5, "five_hour_used": 30, "five_hour_resets_at": now + 7200, "week_used": 10,
+        "week_resets_at": now + 86400, "week_model_used": 20, "week_model_name": "Fable", "session": "probe", "source": "oauth"}) + "\n")
+PROBE_EOF
+PD="$TMP/probe"; mkdir -p "$PD"
+PG() { rm -f "$PD/calls"; GRIND_NOW=$NOW FAKE_PROBE_DIR="$PD" GRIND_QUOTA_READINGS="$R" GRIND_QUOTA_PROBE="$TMP/fakeprobe.py --write" "$@" bash "$G/quota-gate.sh"; }
+calls() { [ -f "$PD/calls" ] && wc -l < "$PD/calls" | tr -d ' ' || echo 0; }
+rd 45 20 1000 > "$R"
+out="$(PG env)"; rc=$?
+[ "$rc" = 0 ] && case "$out" in "GO five_hour_left=70 week_left=90 week_model_left=80 src=oauth age=2s") true;; *) false;; esac \
+  && ok "probe: stale reading refreshed by the probe -> GO, src=oauth, per-model bar read ($out)" || bad "probe refresh: rc=$rc '$out'"
+[ "$(calls)" = 1 ] && ok "probe ran exactly once" || bad "probe calls=$(calls)"
+tail -n 40 .claude/grind/audit.log | grep -q 'quota_probe.*rc=0 fakeprobe.py' && ok "probe attempt audited (quota_probe rc=0)" || bad "no quota_probe audit line"
+tail -n 40 .claude/grind/audit.log | grep -q 'five_hour_left=70% .* src=oauth' && ok "gate audit line keeps src from the record's source" || bad "audit src not oauth"
+rm -f "$R"; PG env >/dev/null; rc=$?
+[ "$rc" = 0 ] && ok "probe: missing readings file created by the probe -> GO" || bad "probe on missing file: rc=$rc"
+rd 45 20 | sed "s/\"five_hour_resets_at\": [0-9]*/\"five_hour_resets_at\": $((NOW - 10))/" > "$R"
+PG env >/dev/null; rc=$?
+[ "$rc" = 0 ] && ok "probe: reading from before the 5h reset refreshed -> GO" || bad "probe after reset: rc=$rc"
+rd 45 20 1000 > "$R"
+out="$(PG env FAKE_PROBE_FAIL=1)"; rc=$?
+[ "$rc" = 6 ] && ok "probe failure ignored: still POLL_FAILED (rc=6)" || bad "probe failure: rc=$rc '$out'"
+[ "$(calls)" = 1 ] && ok "failed probe is not retried (one run)" || bad "failed probe calls=$(calls)"
+tail -n 40 .claude/grind/audit.log | grep -q 'POLL_FAILED.*probe rc=4' && ok "POLL_FAILED audit names the probe result" || bad "POLL_FAILED audit lacks probe rc"
+rd 45 20 > "$R"; PG env >/dev/null
+[ "$(calls)" = 0 ] && ok "fresh reading: the probe is not run" || bad "probe ran on a fresh reading"
+rd 45 20 1000 > "$R"; PG env GRIND_QUOTA_PROBE="" >/dev/null; rc=$?
+[ "$rc" = 6 ] && [ "$(calls)" = 0 ] && ok "GRIND_QUOTA_PROBE empty: probe off, POLL_FAILED" || bad "probe off: rc=$rc calls=$(calls)"
+PG env GRIND_QUOTA_PROBE="$TMP/no-such-probe.py --write" >/dev/null; rc=$?
+[ "$rc" = 6 ] && ok "missing probe script ignored: POLL_FAILED" || bad "missing probe: rc=$rc"
 u="$(GRIND_NOW=$NOW GJ resolve-until 23:59)"
 [ -n "$u" ] && ok "resolve-until HH:MM -> absolute ISO ($u)" || bad "resolve-until failed"
 

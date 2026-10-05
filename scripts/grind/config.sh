@@ -20,7 +20,7 @@ GRIND_MAX_WINDOWS=8             # auto-chain cap: founder-authorized 2026-06-03 
 GRIND_MAX_CONCURRENT=4         # fan-out cap: parallel feature-builders per window (disjoint scope each)
 GRIND_TASK_DEADLINE_MIN=10      # one builder task = one commit within this many minutes (savepoint);
                                 # wave-brief prints the absolute UTC deadline for the briefs
-GRIND_READING_MAX_AGE_SEC=900   # a statusline reading older than this fails the gate (POLL_FAILED);
+GRIND_READING_MAX_AGE_SEC=900   # a reading older than this is stale (the gate runs GRIND_QUOTA_PROBE once, else POLL_FAILED);
                                 # the statusline re-records unchanged meters every 5 min while it runs
 
 # --- main-root anchor (define BEFORE the overrides + paths that use it) ---
@@ -61,6 +61,8 @@ GRIND_MAIN_ROOT="$(grind_main_root)"
 #                                       # from then on the gate answers STOP_WEEKLY (no chain)
 #   GRIND_STOP_BEFORE_WEEK_RESET_MIN=5  # STOP_WEEKLY this many minutes before the weekly reset
 #   GRIND_QUOTA_READINGS=/path/x.jsonl  # statusline readings file (default below)
+#   GRIND_QUOTA_PROBE="/path/probe.py --write"  # refresh a stale reading once (default: cc-usage-probe.py if
+#                                       # installed; set empty to turn the probe off)
 #   GRIND_QUOTA_TOOL=/path/tool.py      # optional adapter: a command printing the old
 #                                       # {five_hour_pct_left, week_pct_left, week_model_pct_left} JSON
 # Verification gates live in <repo>/.claude/grind/verify-cmds (see verify-run).
@@ -93,6 +95,17 @@ GRIND_QUOTA_READINGS="${GRIND_QUOTA_READINGS:-$HOME/.claude/tools/cc-quota.readi
 GRIND_HARD_STOP_AT="${GRIND_HARD_STOP_AT:-}"                 # empty = no campaign hard stop
 GRIND_STOP_BEFORE_WEEK_RESET_MIN="${GRIND_STOP_BEFORE_WEEK_RESET_MIN:-}"   # empty = off
 GRIND_QUOTA_TOOL="${GRIND_QUOTA_TOOL:-}"                     # empty = statusline readings
+# Probe: when the newest reading is missing / stale / from before the 5h reset (the case that
+# fails safe to POLL_FAILED), the gate runs this ONCE, then re-reads the readings once. It is
+# cc-ledger's cc-usage-probe.py, which asks the endpoint /usage uses and appends a source="oauth"
+# reading (no quota spent; works headless and right after a 5h reset). "<script> --write": a
+# script ending in .py runs with GRIND_PYTHON; the gate adds `--readings $GRIND_QUOTA_READINGS`
+# (a custom probe must accept it) and ignores any failure. Unset = that script if it exists;
+# set EMPTY (env or project.conf) = off.
+if [ "${GRIND_QUOTA_PROBE+set}" != "set" ]; then
+  GRIND_QUOTA_PROBE=""
+  [ -f "$HOME/.claude/tools/cc-usage-probe.py" ] && GRIND_QUOTA_PROBE="$HOME/.claude/tools/cc-usage-probe.py --write"
+fi
 
 # --- python ---
 # grindjson.py (stdlib only) runs on the current shell's native python:

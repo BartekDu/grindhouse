@@ -119,7 +119,7 @@ On a cron-resumed window, SKIP straight to loading the stored focus + branches f
 4. **Gitignore hygiene first.** Run `bash $G/hygiene-check fix` — it appends any missing scratch-noise ignores (`.claude/worktrees/`, `*.tmp`, grind's volatile state files, + `GRIND_EXTRA_IGNORES` from `project.conf`) to `.gitignore`. If it added entries, commit `.gitignore` on the campaign branch **before any other work** (`chore: gitignore scratch noise (worktrees, tmp)`). This is why the loop never resurfaces the 455-untracked-file mess.
 4b. **Swarm board (team player, cross-checkout).** `bash $G/swarm-claim.sh check` — exit 2 means a LIVE foreign swarm (another user/machine) owns overlapping focus globs: narrow your globs or negotiate via a comment on the conflicting `swarm-claim` issue; never bulldoze. On CLEAR: `bash $G/swarm-claim.sh claim` to post yours. Treat foreign claims like your own `forbidden_globs`. (`LOCAL_ONLY` = no gh/remote — same-machine concurrency is already covered by lock.sh + the run-log table; proceed.)
 4c. **Knowledge graph freshness.** If `graphify-out/graph.json` exists: refresh it when behind HEAD (`graphify <repo> --update`) and ensure the post-commit rebuild hook is armed (`graphify hook install` — it appends; no conflict with scope-guard/landable-guard). If absent, note it in the transparency print (grind proceeds; scouts fall back to grep) — building a first graph is the founder's call, not a window task.
-5. **Transparency — print before going autonomous:** the focus label + the **campaign branch** + the planned **feature branches** + allowed/forbidden globs + the ordered work plan (the ladder, filtered to focus) + floor/cap (`config.sh`) + the `run-opts show` line + the first gate line (`src=statusline age=…`) + the `/effort high` + `/autocompact 200k` reminder + "stop conditions: quota floor, human-gate, or work-exhausted." Plus the **concurrency table** (below). The founder approves the shape, then can walk away.
+5. **Transparency — print before going autonomous:** the focus label + the **campaign branch** + the planned **feature branches** + allowed/forbidden globs + the ordered work plan (the ladder, filtered to focus) + floor/cap (`config.sh`) + the `run-opts show` line + the first gate line (`src=statusline|oauth age=…`) + the `/effort high` + `/autocompact 200k` reminder + "stop conditions: quota floor, human-gate, or work-exhausted." Plus the **concurrency table** (below). The founder approves the shape, then can walk away.
 4d. **Run options + profile + project rules.** Fresh run: `bash $G/run-opts set` with the
    quick-start flags the user gave (none = defaults); a resumed window only runs
    `bash $G/run-opts show`. Read `$G/profile.md`. Run `bash $G/rules-init`: it creates
@@ -130,8 +130,10 @@ On a cron-resumed window, SKIP straight to loading the stored focus + branches f
    `/autocompact 200k` in this session now" — agents started with the `Agent` tool inherit
    the session's effort (see Model + effort). Run `bash $G/quota-gate.sh` once: it reads the
    newest statusline reading (`GRIND_QUOTA_READINGS`; cc-ledger `cc-statusline.py` must be
-   the status line). The per-model weekly bar is not in those readings: ask the founder to
-   check `/usage` once by hand (profile.md § Orchestrator session).
+   the status line). The status line has no per-model weekly bar: a probe reading
+   (`src=oauth`, see `GRIND_QUOTA_PROBE`) carries it as `week_model_left`; while the gate
+   prints `week_model_left=-1`, ask the founder to check `/usage` once by hand
+   (profile.md § Orchestrator session).
 6. Acquire the window: `bash $G/lock.sh acquire <window_id>` (refuses on dirty tree / existing lock / failing gitignore hygiene). This writes `.active`, which arms the scope-guard pre-commit hook.
 
 ## Concurrency + agent council (STANDARD PRACTICE)
@@ -226,8 +228,10 @@ Repeat until a STOP:
      savepoint (finish current task → commit; workflows park at their journal), then run the
      soft-pause settle steps (RESUME.md, `/context-save`, `swarm-claim.sh release`,
      `lock.sh release`) and STOP the turn. Do NOT kill units mid-task; do NOT start anything new.
-   - `6 POLL_FAILED` → no fresh statusline reading (the status line records while this
-     session is active). Do one ordinary turn of work that needs no new task (update the
+   - `6 POLL_FAILED` → no fresh reading, even after the gate ran its one probe
+     (`GRIND_QUOTA_PROBE`, default cc-ledger's `cc-usage-probe.py --write`, which asks the
+     `/usage` endpoint; it fails when the token expired or there is no subscription OAuth;
+     the status line records only while a session is active). Do one ordinary turn of work that needs no new task (update the
      concurrency table, check a running agent), then run the gate ONCE more; a second
      `POLL_FAILED` → Window-end.
    - `2 STOP_FLOOR` / `3 STOP_WEEKLY` / `5 STOP_KILL` → go to Window-end.

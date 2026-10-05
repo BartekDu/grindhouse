@@ -61,7 +61,11 @@ silently regress the other.
   appends to `~/.claude/tools/cc-quota.readings.jsonl` (contract: cc-ledger
   `docs/READINGS.md`; parser: `grindjson.py quota-read`). Install cc-ledger's
   status line, or no grind can start (the gate fails closed with POLL_FAILED).
-  There are no readings in headless `claude -p` runs. `GRIND_QUOTA_TOOL` is an
+  There are no status line readings in headless `claude -p` runs, and the last one is stale
+  after a 5h reset until the first API call: so when there is no fresh reading the gate runs
+  `GRIND_QUOTA_PROBE` once (default: cc-ledger's `cc-usage-probe.py --write` if installed, which
+  records a `source: "oauth"` reading from the `/usage` endpoint, no quota spent; empty = off)
+  and re-reads once. A probe failure is ignored (still POLL_FAILED). `GRIND_QUOTA_TOOL` is an
   optional adapter for another source. The old `/quota` skill (nested
   `claude /usage` poll) is retired; `install.sh` backs up and removes an old
   install.

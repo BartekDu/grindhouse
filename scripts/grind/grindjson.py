@@ -10,7 +10,7 @@ through here. Stdlib only. Subcommands:
   focus-globs STATE allowed|forbidden      print the focus glob list, one per line
   quota-parse                              read tool JSON on stdin -> "FH WK WM" (WM=-1 if absent; exit 1 if unparseable)
   quota-read READINGS MAX_AGE [HARD_STOP_AT] [STOP_BEFORE_WEEK_RESET_MIN]
-                                           newest statusline reading -> "FH WK WM AGE HS"
+                                           newest reading (any source) -> "FH WK WM AGE HS SRC"
                                            (exit 1 + "FAIL <reason>" when missing / stale / past the 5h reset)
   hard-stop HARD_STOP_AT                   print "0" or "hard_stop_at" (for the GRIND_QUOTA_TOOL adapter)
   next-window READINGS [HARD_STOP_AT] [STOP_BEFORE_WEEK_RESET_MIN]
@@ -176,7 +176,9 @@ def _quota_read(argv):
     except (ValueError, TypeError):
         wm = -1
     hs = _stop_reason(now, hard_stop_at, r.get("week_resets_at"), before_min)
-    return f"{fh} {wk} {wm} {max(age, 0)} {hs}", 0
+    # who wrote it: "statusline" (cc-statusline.py) or "oauth" (cc-usage-probe.py); one safe word for the audit line
+    src = "".join(c for c in str(r.get("source") or "") if c.isalnum() or c in "_-")[:16] or "statusline"
+    return f"{fh} {wk} {wm} {max(age, 0)} {hs} {src}", 0
 
 
 def _next_window(argv):
