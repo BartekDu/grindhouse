@@ -20,7 +20,7 @@ supporting cast
 
 | Path | What |
 |---|---|
-| `scripts/grind/` | **The law.** quota-gate (floor/weekly/model-weekly/reserve/kill/PAUSE), scope-guard (focus globs + worktree law, pre-commit), landable-guard (pre-push), commit-msg-guard (commit-msg, conventional messages), value-gate, verify-run (per-repo `verify-cmds`, else auto-detected gates), lock, hygiene-check, cost-table, audit-verify (hash chain), swarm-claim (gh-issue ownership board), selftest (the whole matrix, no network/auth), grindjson.py, grind-bootstrap.sh |
+| `scripts/grind/` | **The law.** quota-gate (statusline readings: floor/weekly/model-weekly/reserve/hard stop/kill/PAUSE), scope-guard (focus globs + worktree law, pre-commit), landable-guard (pre-push), commit-msg-guard (commit-msg, conventional messages), value-gate, verify-run (per-repo `verify-cmds`, else auto-detected gates), lock, hygiene-check, cost-table, audit-verify (hash chain), swarm-claim (gh-issue ownership board), run-opts (`/grind` quick-start flags in state.json), rules-init (per-repo `rules.md`), wave-brief (advisory budget brief from cc-ledger), profile.md (the learned working rules, one copy), selftest (the whole matrix, no network/auth), grindjson.py, grind-bootstrap.sh |
 | `skills/<name>/` | The six skills (SKILL.md policy files + helpers) |
 | `install.sh` | Sync this repo → `~/.claude/skills` (the live install) |
 
