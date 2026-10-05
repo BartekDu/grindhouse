@@ -130,8 +130,9 @@ On a cron-resumed window, SKIP straight to loading the stored focus + branches f
    `/autocompact 200k` in this session now" — agents started with the `Agent` tool inherit
    the session's effort (see Model + effort). Run `bash $G/quota-gate.sh` once: it reads the
    newest statusline reading (`GRIND_QUOTA_READINGS`; cc-ledger `cc-statusline.py` must be
-   the status line). The status line has no per-model weekly bar: a probe reading
-   (`src=oauth`, see `GRIND_QUOTA_PROBE`) carries it as `week_model_left`; while the gate
+   the status line). The status line has no per-model weekly bar: the gate carries it from
+   the newest fresh probe reading of the same week (`src=oauth`, see `GRIND_QUOTA_PROBE`), and
+   runs the probe once when there is none; while the gate
    prints `week_model_left=-1`, ask the founder to check `/usage` once by hand
    (profile.md § Orchestrator session).
 6. Acquire the window: `bash $G/lock.sh acquire <window_id>` (refuses on dirty tree / existing lock / failing gitignore hygiene). This writes `.active`, which arms the scope-guard pre-commit hook.

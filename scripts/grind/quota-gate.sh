@@ -87,8 +87,10 @@ else
   read_meters() { out="$(grind_gj quota-read "$GRIND_QUOTA_READINGS" "$GRIND_READING_MAX_AGE_SEC" "$HARD_STOP" "$GRIND_STOP_BEFORE_WEEK_RESET_MIN")"; }
   read_meters; rc=$?
   probe_note=""
-  if [ "$rc" -ne 0 ] && [ -n "$GRIND_QUOTA_PROBE" ]; then
-    # no fresh reading: ask the probe ONCE (any failure is ignored), then re-read ONCE
+  # no fresh reading, or no fresh per-model weekly bar (the status line never has one):
+  # ask the probe ONCE (any failure is ignored), then re-read ONCE
+  wm_now=""; [ "$rc" -eq 0 ] && wm_now="$(printf '%s' "$out" | cut -d' ' -f3)"
+  if { [ "$rc" -ne 0 ] || [ "$wm_now" = "-1" ]; } && [ -n "$GRIND_QUOTA_PROBE" ]; then
     probe_script="${GRIND_QUOTA_PROBE%% --*}"; probe_args="${GRIND_QUOTA_PROBE#"$probe_script"}"
     if [ -f "$probe_script" ]; then
       case "$probe_script" in *.py) probe_cmd=("$GRIND_PYTHON" "$probe_script");; *) probe_cmd=("$probe_script");; esac

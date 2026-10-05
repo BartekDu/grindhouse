@@ -112,10 +112,11 @@ def _hard_stop_epoch(spec, now):
     return best
 
 
-def _latest_reading(path):
+def _latest_reading(path, with_model=False):
     """Record with the greatest `t` from the tail of the readings file (concurrent
     sessions can interleave lines, so the last line is not always the newest).
-    Corrupt or partial lines are skipped. Raises OSError if the file is missing."""
+    Corrupt or partial lines are skipped. Raises OSError if the file is missing.
+    with_model=True: only records that carry "week_model_used" count."""
     with open(path, "rb") as f:
         f.seek(0, 2)
         f.seek(max(0, f.tell() - 65536))
@@ -127,6 +128,8 @@ def _latest_reading(path):
             t = float(o["t"])
             float(o["five_hour_used"]), float(o["week_used"])
         except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            continue
+        if with_model and o.get("week_model_used") is None:
             continue
         if best is None or t > float(best["t"]):
             best = o
@@ -171,6 +174,14 @@ def _quota_read(argv):
         return "FAIL reading predates the 5h reset", 1
     fh, wk = _left(r["five_hour_used"]), _left(r["week_used"])
     wm = r.get("week_model_used")
+    if wm is None:
+        # The status line has no per-model bar; the probe (source=oauth) has. Carry the
+        # newest fresh per-model value from the same week (resets_at jitters by ~1 s).
+        m = _latest_reading(path, with_model=True)
+        mr, rr = _epoch((m or {}).get("week_resets_at")), _epoch(r.get("week_resets_at"))
+        if m is not None and now - float(m["t"]) <= max_age and (
+                mr is None or rr is None or abs(mr - rr) <= 300):
+            wm = m.get("week_model_used")
     try:
         wm = -1 if wm is None else _left(wm)
     except (ValueError, TypeError):

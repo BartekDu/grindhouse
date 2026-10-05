@@ -197,8 +197,22 @@ out="$(PG env FAKE_PROBE_FAIL=1)"; rc=$?
 [ "$rc" = 6 ] && ok "probe failure ignored: still POLL_FAILED (rc=6)" || bad "probe failure: rc=$rc '$out'"
 [ "$(calls)" = 1 ] && ok "failed probe is not retried (one run)" || bad "failed probe calls=$(calls)"
 tail -n 40 .claude/grind/audit.log | grep -q 'POLL_FAILED.*probe rc=4' && ok "POLL_FAILED audit names the probe result" || bad "POLL_FAILED audit lacks probe rc"
-rd 45 20 > "$R"; PG env >/dev/null
-[ "$(calls)" = 0 ] && ok "fresh reading: the probe is not run" || bad "probe ran on a fresh reading"
+# per-model carry-over: the status line has no per-model bar; the newest fresh oauth value from the same week is used
+rdo() { printf '{"ts": "x", "t": %s, "five_hour_used": 50, "five_hour_resets_at": %s, "week_used": 20, "week_resets_at": %s, "week_model_used": %s, "week_model_name": "Fable", "session": "probe", "source": "oauth"}\n' \
+    "$((NOW - $2)).5" "$((NOW + 3600))" "$((NOW + 86400 + ${3:-1}))" "$1"; }
+{ rdo 20 300; rd 45 20 60; } > "$R"
+out="$(QG)"; case "$out" in "GO five_hour_left=55 week_left=80 week_model_left=80 src=statusline age=59s") ok "per-model bar carried from a fresh oauth reading of the same week";; *) bad "carry: '$out'";; esac
+{ rdo 95 300; rd 45 20 60; } > "$R"; expect_rc "carried per-model bar 5% left -> STOP_WEEKLY" 3 QG
+{ rdo 20 1000; rd 45 20 60; } > "$R"
+out="$(QG)"; case "$out" in *"week_model_left=-1 "*) ok "stale oauth per-model value is not carried";; *) bad "stale carry: '$out'";; esac
+{ rdo 20 300 -604800; rd 45 20 60; } > "$R"
+out="$(QG)"; case "$out" in *"week_model_left=-1 "*) ok "per-model value from another week is not carried";; *) bad "other-week carry: '$out'";; esac
+rd 45 20 60 > "$R"
+out="$(PG env)"; rc=$?
+[ "$rc" = 0 ] && [ "$(calls)" = 1 ] && case "$out" in *"week_model_left=80 "*) true;; *) false;; esac \
+  && ok "fresh reading without per-model bar -> probe once, bar filled ($out)" || bad "probe for per-model: rc=$rc calls=$(calls) '$out'"
+rd 45 20 60 '"week_model_used": 5' > "$R"; PG env >/dev/null
+[ "$(calls)" = 0 ] && ok "fresh reading with a per-model bar: the probe is not run" || bad "probe ran on a fresh reading"
 rd 45 20 1000 > "$R"; PG env GRIND_QUOTA_PROBE="" >/dev/null; rc=$?
 [ "$rc" = 6 ] && [ "$(calls)" = 0 ] && ok "GRIND_QUOTA_PROBE empty: probe off, POLL_FAILED" || bad "probe off: rc=$rc calls=$(calls)"
 PG env GRIND_QUOTA_PROBE="$TMP/no-such-probe.py --write" >/dev/null; rc=$?

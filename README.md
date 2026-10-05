@@ -65,7 +65,10 @@ silently regress the other.
   after a 5h reset until the first API call: so when there is no fresh reading the gate runs
   `GRIND_QUOTA_PROBE` once (default: cc-ledger's `cc-usage-probe.py --write` if installed, which
   records a `source: "oauth"` reading from the `/usage` endpoint, no quota spent; empty = off)
-  and re-reads once. A probe failure is ignored (still POLL_FAILED). `GRIND_QUOTA_TOOL` is an
+  and re-reads once. A probe failure is ignored (still POLL_FAILED). The status line has no
+  per-model weekly bar, so the gate carries `week_model_used` from the newest probe reading of
+  the same week that is still within `GRIND_READING_MAX_AGE_SEC`, and runs the probe once when
+  there is none. `GRIND_QUOTA_TOOL` is an
   optional adapter for another source. The old `/quota` skill (nested
   `claude /usage` poll) is retired; `install.sh` backs up and removes an old
   install.
