@@ -4,7 +4,8 @@
 
 set -o pipefail
 
-grind_now()       { date +%s; }
+# GRIND_NOW (epoch seconds) pins "now" for tests; grindjson.py honours it too.
+grind_now()       { if [ -n "${GRIND_NOW:-}" ]; then printf '%s\n' "${GRIND_NOW%%.*}"; else date +%s; fi; }
 grind_now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
 grind_die()       { echo "grind: $*" >&2; exit 1; }
 
