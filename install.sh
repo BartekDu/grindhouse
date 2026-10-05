@@ -23,7 +23,9 @@ if [ -d "$DEST/quota" ]; then
   mkdir -p "$BACKUPS"
   bk="$BACKUPS/quota-skill-$(date +%Y%m%d-%H%M%S).tgz"
   tar czf "$bk" -C "$DEST" quota
-  if tar tzf "$bk" | grep -q '^quota/SKILL.md$'; then
+  # list into a variable first: `tar | grep -q` under pipefail fails on SIGPIPE
+  listing="$(tar tzf "$bk" 2>/dev/null || true)"
+  if printf '%s\n' "$listing" | grep -x 'quota/SKILL.md' >/dev/null; then
     rm -rf "$DEST/quota"
     echo "  retired: quota (backup $bk)"
   else
