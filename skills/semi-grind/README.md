@@ -52,5 +52,5 @@ The seed campaign ran 2026-06-09 on branch **`grind-09-06-2026`** → **PR #64**
 Locked founder conventions (2026-06-09 quiz) baked into the skill: (1) codex+finops on the
 EVOLVE branch only; (2) quizzes/DD-NNN stay out of `landable-guard`, flagged loudly at
 window-end; (3) absent-founder fallback = degrade to grind's log-a-gate-and-continue;
-(4) reuse the `grind-DD-MM-YYYY` branch prefix; (5) re-poll `quota-gate.sh --force` on every
+(4) reuse the `grind-DD-MM-YYYY` branch prefix; (5) re-run `quota-gate.sh` on every
 post-quiz/cron resume.

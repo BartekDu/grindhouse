@@ -58,6 +58,12 @@ Canonical thresholds live in `scripts/grind/config.sh` (floor 10% / weekly 10% /
 model-weekly 10% / reserve 5% / MAX_WINDOWS / MAX_CONCURRENT) — never hardcode a
 different number.
 
+The working rules learned from past campaigns apply here too and live in ONE place,
+`$G/profile.md`: the orchestrator runs at `/effort high` + `/autocompact 200k` (the
+`Agent` tool inherits the session's effort), every builder/verifier brief carries
+`.claude/grind/rules.md` (`bash $G/rules-init`) and a UTC deadline, checks fail closed
+with a control case.
+
 **Resolving `G` — global skill, works in any repo.** Both skills install globally and
 share ONE guardrail bundle. At Step 0, FIRST run
 `source ~/.claude/skills/grind/scripts/grind/grind-bootstrap.sh` — it exports `$G`
@@ -137,8 +143,8 @@ opens/merges the PR; the loop never pushes to a protected branch.
 
 ## Step 0 — Focus + branches + transparency (first window only)
 
-On a cron-resumed window, SKIP to loading focus + branches from `state.json`, then re-poll
-quota (convention 5, below) — but STILL run step 0 below first (resolve `$G` + arm hooks).
+On a cron-resumed window, SKIP to loading focus + branches from `state.json`, then re-run
+the quota gate (convention 5, below) — but STILL run step 0 below first (resolve `$G` + arm hooks).
 
 0. **Resolve `$G` + arm hooks (every window, first action):**
    `source ~/.claude/skills/grind/scripts/grind/grind-bootstrap.sh`. Surface its status;
@@ -202,8 +208,11 @@ Repeat until a STOP:
    `0 GO`→proceed · `4 NO_NEW_TASK`→pick a SMALLER cluster/CF, else go to Window-end
    (Work-exhausted, stop condition 3) · `7 SOFT_PAUSE`→the user ran `/soft-pause`: let
    in-flight units DRAIN to their savepoint (finish current fix → commit), then park —
-   never kill mid-task; settle + resume per the `/soft-pause` skill · `2/3/5/6`→Window-end.
-   Never poll quota yourself or reinterpret the number — the script rate-limits + caches.
+   never kill mid-task; settle + resume per the `/soft-pause` skill · `6 POLL_FAILED`→no
+   fresh statusline reading: one ordinary turn, then the gate once more; a second
+   `POLL_FAILED`→Window-end · `2/3/5`→Window-end.
+   Never read quota yourself or reinterpret the number — trust the script.
+   Before each fix wave, `bash $G/wave-brief` (advisory; /grind loop step 1b).
 2. **Pick the next cluster** by the register's priority line, respecting `depends_on`
    (residual scope reassigned across clusters).
 3. **Classify the fix (AUTO vs GATE vs internal-convention)** via the boundary below.
@@ -323,7 +332,7 @@ non-interactive gates). Do not run a deep review per AUTO fix.
 
 Cite these exact paths; never fork or re-derive their logic:
 
-- **`$G/quota-gate.sh`** — canonical floor + reserve + rate-limited poll. The terminal
+- **`$G/quota-gate.sh`** — canonical floor + reserve, on the newest statusline reading. The terminal
   condition. Trust its exit codes (`0 GO` / `2 STOP_FLOOR` / `3 STOP_WEEKLY` — fires on
   the all-models AND the per-model weekly bar / `4 NO_NEW_TASK` / `5 STOP_KILL` /
   `6 POLL_FAILED` / `7 SOFT_PAUSE` — drain to savepoint + park, never kill).
@@ -381,7 +390,7 @@ risk.
 
 ## Window-end
 
-1. `bash $G/quota-gate.sh --force`; log exact `five_hour_pct_left` + `week_pct_left` +
+1. `bash $G/quota-gate.sh`; log exact `five_hour_pct_left` + `week_pct_left` +
    stop-reason to `run-log.md` + `state.json.stop_log` (also in the audit log).
 2. Commit WIP onto its `grind/feat/<slug>` branch; merge clean+verified feature branches →
    campaign; `bash $G/hygiene-check verify`. Regenerate `RESUME.md` + the register
@@ -395,16 +404,18 @@ risk.
    `grind-DD-MM-YYYY` → `<base>` (gates blocked: …; open decisions: DD-NNN …)". Pushing
    branches is fine; opening/merging is the user's call.
 5. **Chain?** Only if `window_counter < MAX_WINDOWS` AND in-focus work remains AND not
-   STOP_WEEKLY/STOP_KILL AND no whole-campaign quiz block: `CronCreate` the next window at
-   the 5h reset with a resume prompt (loads focus+branches from state.json, skips Step 0,
-   **re-polls quota** — convention 5), `state_set '.window_counter += 1'`, STOP this turn.
-   Else STOP + status report.
+   STOP_WEEKLY/STOP_KILL AND no whole-campaign quiz block AND `bash $G/quota-gate.sh
+   --next-window` answers `CHAIN …`: `CronCreate` the next window at that time with a
+   resume prompt that starts with `[grind-resume]` (cc-pause-guard blocks unmarked cron
+   prompts) and reads RESUME.md + state.json, then runs the gate (convention 5), then
+   `wave-brief` — the /grind Window-end template. `state_set '.window_counter += 1'`,
+   STOP this turn. Else STOP + status report.
 
 ### Re-poll on every post-quiz resume (convention 5)
 
 A blocking `AskUserQuestion` burns the 5h **wall-clock** window even though no tokens flow
 (the window is wall-clock, not work-clock; it cannot be paused). So **on every post-quiz
-resume — and on every cron-resumed window — re-poll `bash $G/quota-gate.sh --force` BEFORE
+resume — and on every cron-resumed window — re-run `bash $G/quota-gate.sh` BEFORE
 the next task**, and stop if the user's think-time pushed us under the floor. Never assume
 the pre-quiz reading still holds.
 
@@ -448,7 +459,7 @@ the pre-quiz reading still holds.
   visual + the recommended option first.
 - **Always** verify with `bash $G/verify-run` and restate results honestly — "green
   except X, here's why X isn't mine," never a rounded "green."
-- **Always** re-poll `quota-gate.sh --force` on every post-quiz resume + every cron
+- **Always** re-run `quota-gate.sh` on every post-quiz resume + every cron
   window (convention 5) before the next task.
 - **Always** keep the focus a glob contract, confirmed at Step 0, reused (not re-asked)
   on cron windows.

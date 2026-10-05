@@ -84,7 +84,10 @@ non-zero — a sprint without hooks is lawless.
    `.claude/worktrees/grind-feat-<slug>` (scope-guard's worktree law REFUSES
    builder commits outside `.claude/worktrees/`).
 6. `bash $G/quota-gate.sh` — obey (incl. `7 SOFT_PAUSE` → drain + park per
-   `/soft-pause`).
+   `/soft-pause`; `6 POLL_FAILED` → one turn, one retry, as in `/grind`). It reads the
+   newest statusline reading. Print the `/effort high` + `/autocompact 200k` reminder;
+   `bash $G/rules-init` (project rules for every brief; fill a fresh skeleton with the
+   founder before going autonomous); read `$G/profile.md`.
 7. `bash $G/lock.sh acquire <window_id>`.
 
 On a cron-resumed window: run S0, then **SKIP S1–S4** (the charter is frozen —
@@ -156,10 +159,12 @@ Write `state.json .sprint.team[]` + a run-log table. Per role:
 | build/verify runs, test authoring | sonnet | high |
 | architecture, taste, merge conflicts, orchestration, GATE-class judgment | opus/fable | high/max |
 
-Every `agent()` / `Agent` call sets BOTH fields from the manifest: an omitted
-`effort` inherits the orchestrator session's effort (usually `max`) — in session
-`6c5ee3ea` (2026-09-27) that was about $240 of Sonnet agents at `max` with no
-better first-pass rate than `high`.
+Every Workflow `agent()` call sets BOTH fields from the manifest. The `Agent`
+tool takes only `model`: its agents inherit the orchestrator session's effort, so
+the orchestrator runs at `/effort high` + `/autocompact 200k` (S0 prints it; the
+founder types it). An agent at the inherited `max` was the failure: in session
+`6c5ee3ea` (2026-09-27) about $240 of Sonnet agents ran at `max` with no better
+first-pass rate than `high`. Working rules: `$G/profile.md`.
 
 When unsure between tiers, take the cheaper one for read-only roles and the
 stronger one for anything that writes code the founder will review. Record
@@ -183,13 +188,17 @@ pipeline(waveItems,
   prior results (dedup/merge). Item A verifies while item B still builds.
 - Builders in worktrees is LAW (scope-guard worktree law), disjoint write-scope
   per item is LAW at dispatch (from the frozen wave decomposition).
-- Every builder prompt carries: the graph-first block, the savepoint contract
-  ("reach a commit within ~10 min; decompose otherwise"), the focus globs, and
-  the conventional-commit format + task id.
+- Every builder prompt carries: the graph-first block, `.claude/grind/rules.md`
+  verbatim, the savepoint contract with the absolute UTC deadline `wave-brief`
+  printed, the focus globs, the conventional-commit format + task id, and the
+  brief rules of `$G/profile.md` (fail-closed checks with a control case; the
+  verifier also diffs changed documents).
 - The Workflow journal is the wave's savepoint: on `/soft-pause` (quota-gate
   exit 7) or a crash, resume with `Workflow({scriptPath, resumeFromRunId})` —
   the unchanged prefix replays free.
-- Between waves: `bash $G/quota-gate.sh [TASK_TYPE]` (obey 0/2/3/4/5/6/7);
+- Between waves: `bash $G/quota-gate.sh [TASK_TYPE]` (obey 0/2/3/4/5/6/7), then
+  `bash $G/wave-brief` (advisory: deadline, $ left, agents past 100 requests,
+  re-read files);
   orchestrator merges verified branches → campaign branch; `graphify --update`;
   update the concurrency manifest in `run-log.md`
   (session/role/task/branch/write-scope/status/gate — the `/grind` table shape);
@@ -201,12 +210,14 @@ pipeline(waveItems,
 
 ## S6 — Window-end (work remains, quota doesn't)
 
-Exactly `/grind` Window-end: `quota-gate.sh --force` + log the number and
+Exactly `/grind` Window-end: `quota-gate.sh` + log the number and
 reason; commit WIP; merge verified; `graphify --update`; `hygiene-check verify`;
 regenerate `RESUME.md`; `lock.sh release`; `swarm-claim.sh renew`. Chain via
-`CronCreate` at the 5h reset with a resume prompt that reloads `state.json` and
-**skips S1–S4** (frozen plan), `window_counter += 1`, STOP the turn. No chain on
-STOP_WEEKLY / STOP_KILL / `window_counter >= MAX_WINDOWS` (config.sh).
+`CronCreate` at the time `quota-gate.sh --next-window` prints (`CHAIN …`), with a
+resume prompt that starts with `[grind-resume]` (cc-pause-guard blocks unmarked
+cron prompts), reads `RESUME.md` + `state.json`, runs the gate, then `wave-brief`,
+and **skips S1–S4** (frozen plan); `window_counter += 1`, STOP the turn. No chain on
+STOP_WEEKLY / STOP_KILL / `NO_CHAIN` / `window_counter >= MAX_WINDOWS` (config.sh).
 
 ## S7 — DONE (the anti-grind terminal)
 

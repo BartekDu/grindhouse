@@ -30,22 +30,22 @@ allowed-tools:
 # /grind-office — the office at a glance (read-only)
 
 **Contract:** render ONE dashboard from on-disk state + read-only queries.
-NEVER mutate: no claims, no releases, no sentinel changes, no state writes, no
-fresh quota poll that would double-spend (reuse `.quota-cache.json` / the CSV;
-only poll if both are stale >10 min AND the founder asked for fresh numbers).
+NEVER mutate: no claims, no releases, no sentinel changes, no state writes. Do
+not run `quota-gate.sh` either (it appends to the audit log and rewrites
+`.quota-cache.json`); read the statusline readings directly (quota panel below).
 
 ## Sources → panels
 
 | Panel | Source |
 |---|---|
-| quota | `.claude/grind/.quota-cache.json` (fh/wk/wm) else newest row of `~/.claude/quota_log.csv`; flag which bar binds (the per-model week usually exhausts first) |
+| quota | `bash -c '. $G/config.sh; grind_gj quota-read "$GRIND_QUOTA_READINGS" "$GRIND_READING_MAX_AGE_SEC" "$GRIND_HARD_STOP_AT" "$GRIND_STOP_BEFORE_WEEK_RESET_MIN"'` → `FH WK WM AGE HS` (percent LEFT; WM=-1 = no per-model bar in the reading; HS≠0 = hard stop reached) or `FAIL <reason>`; on FAIL fall back to `.claude/grind/.quota-cache.json` and mark it stale. Flag which bar binds |
 | mode/window | `.claude/grind/state.json` (`.focus.label`, `.campaign_branch`, `.window_counter`) + which skill's register dir exists |
 | swarms | this session: `state.json .sessions[]` + run-log concurrency manifest; foreign: `gh issue list --label swarm-claim --state open` (read-only; skip silently if no gh/remote) |
 | team/waves | `state.json .sprint.team[]` / `.sprint.waves[]` when present; register progress line (`consistency-findings.md`) for semi-grind; TaskList board |
 | gates | `.claude/grind/gate-ledger.md` open `- [ ]` rows + `<register-dir>/decisions-ledger.md` open `DD-NNN`s |
 | sentinels | `PAUSE` / `STOP` existence; `lock.sh status`; `.active` |
 | resume | `RESUME.md` mtime + first heading |
-| diag | `config.sh` pythons resolvable? `GRIND_QUOTA_TOOL` path exists? git hooks contain scope-guard/landable-guard markers? `diff -q` canonical `scripts/grind` vs `~/.claude/skills/grind/scripts/grind` (minus grind-bootstrap.sh) |
+| diag | `GRIND_PYTHON` resolvable? statusline reading age (AGE from the quota row; > `GRIND_READING_MAX_AGE_SEC` = the gate will answer POLL_FAILED)? `GRIND_QUOTA_TOOL` set (adapter) and present? `.run_opts` (`bash $G/run-opts show`)? git hooks contain scope-guard/landable-guard markers? `diff -q` canonical `scripts/grind` vs `~/.claude/skills/grind/scripts/grind` (minus grind-bootstrap.sh) |
 
 ## Output shape (always this box; omit empty panels with a `·  none` line)
 
@@ -60,7 +60,7 @@ only poll if both are stale >10 min AND the founder asked for fresh numbers).
 │ gates   G-03 needs:/cso · DD-7 deferred                    │
 │ sentinel PAUSE:no STOP:no  lock:held(pid 1234)  active:yes │
 │ resume  .claude/grind/RESUME.md (fresh, 14:05)             │
-│ diag    pythons OK · quota tool OK · hooks armed · mirror OK│
+│ diag    python OK · reading 40s · hooks armed · mirror OK  │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,8 +72,6 @@ drift, POLL_FAILED history in the audit tail, PAUSE present, RESUME stale >24h)
 
 - **Never** mutate anything — this skill is the one place in the engine that is
   guaranteed safe to run mid-campaign, mid-pause, or mid-someone-else's-window.
-- **Never** trigger a fresh ~13s quota poll when a cached reading <10 min
-  exists — reuse; the dashboard is a glance, not an audit.
 - **Never** silently omit a red panel — sentinels present, mirror drift, or a
   binding model-week bar are the headline, not a footnote.
 - **Always** show which quota bar BINDS (min of 5h/week/model-week vs their

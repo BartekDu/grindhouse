@@ -17,7 +17,7 @@ Ratified 2026-07-10 with the `/soft-pause` skill and quota-gate exit 7.
 - Between savepoints = the at-risk zone; the rule exists to keep it small.
 - Pause = drain to next savepoint, park (never kill mid-task); hard-stop and
   power cuts lose only the at-risk zone.
-- Resume re-polls quota FIRST (`--force`) — pauses burn wall-clock; the 5h
-  window does not pause with you.
+- Resume runs one turn, then the quota gate, before any new work — pauses
+  burn wall-clock; the 5h window does not pause with you.
 
 Full operator procedure: `~/.claude/skills/soft-pause/SKILL.md`.

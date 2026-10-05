@@ -100,9 +100,12 @@ verified against the last commit/journal entry).
 1. `rm .claude/grind/PAUSE` (if present) + audit entry.
 2. Reload `state.json`: focus globs, campaign + feature branches, team manifest,
    `window_counter`.
-3. **Re-poll quota FIRST:** `bash $G/quota-gate.sh --force` — a pause burns
-   wall-clock, not tokens; the 5h window did NOT pause with you. Obey the exit
-   code (a resume straight into `STOP_FLOOR` parks again until the reset).
+3. **Then the quota gate, before any new work:** `bash $G/quota-gate.sh` — a pause
+   burns wall-clock, not tokens; the 5h window did NOT pause with you. The gate reads
+   the newest statusline reading, and a parked session records none, so step 2 (one
+   ordinary turn) comes first: it refreshes the reading. A `6 POLL_FAILED` here = one
+   more turn, then the gate once more; a second one parks again. Obey the exit code
+   (a resume straight into `STOP_FLOOR` parks again until the reset).
 4. Re-claim the swarm board: `bash $G/swarm-claim.sh check` then `claim`
    (someone may have legitimately claimed your globs while you were parked —
    exit 2 means negotiate, not bulldoze).
@@ -123,7 +126,7 @@ worktrees. Run the same steps 2–6; the loss is whatever sat between savepoints
   checkpoints; parking at the next `agent()` boundary is free, killing is not.
 - **Never** dispatch a builder task estimated >10 min without decomposing it —
   the savepoint contract is what makes every pause and every power cut cheap.
-- **Never** resume without re-polling `quota-gate.sh --force` and re-checking
+- **Never** resume without re-running `quota-gate.sh` (after one turn) and re-checking
   `swarm-claim.sh check` — wall-clock moved and teammates may have claimed globs.
 - **Never** report "nothing lost" without checking each unit's last savepoint.
 - **Always** leave the settle table in the transcript AND in `RESUME.md`.
