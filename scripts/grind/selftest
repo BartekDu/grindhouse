@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # selftest — the law, proven. No network, no Claude auth, no quota spend:
-# quota-gate is exercised through a FAKED .quota-cache.json (the rate-limited
-# cache path) and the PAUSE/STOP sentinels, never a live /usage poll.
+# quota-gate is exercised through FIXTURE statusline readings (GRIND_QUOTA_READINGS
+# + a pinned GRIND_NOW) and the PAUSE/STOP sentinels, never a live reading.
 #
 # Runs the WHOLE guardrail matrix in throwaway git repos under mktemp, with the
 # checkout-under-test VENDORED into the temp repo (repo-local scripts/grind wins
@@ -108,24 +108,60 @@ expect_rc "second acquire refused while held" 1 bash "$G/lock.sh" acquire w2
 # focus contract for the guard tests
 GJ set .claude/grind/state.json focus '{"label":"api","allowed_globs":["src/api/**"],"forbidden_globs":["infra/**"]}'
 
-# ---------- 4. quota-gate: every exit code via the cache, no live poll ----------
-GJ cache-write .claude/grind/.quota-cache.json 55 80 90
-expect_rc "quota-gate GO"                       0 bash "$G/quota-gate.sh"
-GJ cache-write .claude/grind/.quota-cache.json 8 80 90
-expect_rc "quota-gate STOP_FLOOR"               2 bash "$G/quota-gate.sh"
-GJ cache-write .claude/grind/.quota-cache.json 55 5 90
-expect_rc "quota-gate STOP_WEEKLY (all-models)" 3 bash "$G/quota-gate.sh"
-GJ cache-write .claude/grind/.quota-cache.json 55 80 5
-expect_rc "quota-gate STOP_WEEKLY (per-model)"  3 bash "$G/quota-gate.sh"
-GJ cache-write .claude/grind/.quota-cache.json 13 80 90
-expect_rc "quota-gate NO_NEW_TASK (reserve)"    4 bash "$G/quota-gate.sh"
-GJ cache-write .claude/grind/.quota-cache.json 55 80 90
-touch .claude/grind/STOP
-expect_rc "quota-gate STOP_KILL"                5 bash "$G/quota-gate.sh"
-rm .claude/grind/STOP
-touch .claude/grind/PAUSE
-expect_rc "quota-gate SOFT_PAUSE"               7 bash "$G/quota-gate.sh"
-rm .claude/grind/PAUSE
+# ---------- 4. quota-gate: every exit code from fixture statusline readings ----------
+NOW=1800000000; R="$TMP/readings.jsonl"
+# rd FH_USED WK_USED [AGE_S] [EXTRA_JSON_FIELDS] -> one reading line (contract: cc-ledger docs/READINGS.md)
+rd() {
+  printf '{"ts": "x", "t": %s, "five_hour_used": %s, "five_hour_resets_at": %s, "week_used": %s, "week_resets_at": %s, "session": "selftest", "source": "statusline"%s}\n' \
+    "$((NOW - ${3:-60})).5" "$1" "$((NOW + 3600))" "$2" "$((NOW + 86400))" "${4:+, $4}"
+}
+QG() { GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$R" bash "$G/quota-gate.sh" "$@"; }
+rd 45 20 > "$R"
+expect_rc "quota-gate GO"                            0 QG
+out="$(QG)"; case "$out" in "GO five_hour_left=55 week_left=80 week_model_left=-1 src=statusline age=59s") ok "gate line: 100-used, WM=-1 when absent, age";; *) bad "gate line: '$out'";; esac
+expect_rc "quota-gate --force is a no-op (still GO)" 0 QG --force
+fh="$(GJ get .claude/grind/.quota-cache.json five_hour_pct_left)"
+[ "$fh" = "55" ] && ok "gate keeps .quota-cache.json for grind-office" || bad "cache not written (got '$fh')"
+rd 92 20 > "$R";  expect_rc "quota-gate STOP_FLOOR"                2 QG
+rd 45 95 > "$R";  expect_rc "quota-gate STOP_WEEKLY (all-models)"  3 QG
+rd 45 100 > "$R"; expect_rc "quota-gate STOP_WEEKLY (week=0)"      3 QG
+rd 45 20 60 '"week_model_used": 95' > "$R"; expect_rc "quota-gate STOP_WEEKLY (per-model)"  3 QG
+rd 45 20 60 '"week_model_used": 5' > "$R";  expect_rc "quota-gate GO (per-model 95% left)"  0 QG
+rd 87.5 20 > "$R"; expect_rc "quota-gate NO_NEW_TASK (reserve, float used)" 4 QG
+rd 45 20 > "$R"
+touch .claude/grind/STOP;  expect_rc "quota-gate STOP_KILL"   5 QG; rm .claude/grind/STOP
+touch .claude/grind/PAUSE; expect_rc "quota-gate SOFT_PAUSE"  7 QG; rm .claude/grind/PAUSE
+rd 45 20 1000 > "$R"; expect_rc "quota-gate POLL_FAILED (stale reading)" 6 QG
+rd 45 20 | sed "s/\"five_hour_resets_at\": [0-9]*/\"five_hour_resets_at\": $((NOW - 10))/" > "$R"
+expect_rc "quota-gate POLL_FAILED (reading predates 5h reset)" 6 QG
+rd 45 20 | sed 's/"five_hour_resets_at": [0-9]*/"five_hour_resets_at": null/' > "$R"
+expect_rc "quota-gate GO (five_hour_resets_at null)" 0 QG
+expect_rc "quota-gate POLL_FAILED (no readings file)" 6 env GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$TMP/none.jsonl" bash "$G/quota-gate.sh"
+{ rd 45 20; printf '{"t": %s, "five_hour_us' "$NOW"; } > "$R"
+expect_rc "quota-gate GO (truncated last line skipped)" 0 QG
+{ rd 92 20 30; rd 45 20 300; } > "$R"
+expect_rc "quota-gate interleaved lines: max t wins (STOP_FLOOR)" 2 QG
+rd 45 20 > "$R"
+expect_rc "quota-gate STOP_WEEKLY (GRIND_HARD_STOP_AT passed)" 3 env GRIND_HARD_STOP_AT=$((NOW - 1)) GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$R" bash "$G/quota-gate.sh"
+expect_rc "quota-gate GO (GRIND_HARD_STOP_AT ahead)" 0 env GRIND_HARD_STOP_AT=$((NOW + 600)) GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$R" bash "$G/quota-gate.sh"
+GJ set .claude/grind/state.json run_opts "{\"hard_stop_at\": \"$((NOW - 1))\"}"
+expect_rc "quota-gate STOP_WEEKLY (run_opts.hard_stop_at from --until)" 3 QG
+GJ set .claude/grind/state.json run_opts '{}'
+rd 45 20 | sed "s/\"week_resets_at\": [0-9]*/\"week_resets_at\": $((NOW + 200))/" > "$R"
+expect_rc "quota-gate STOP_WEEKLY (STOP_BEFORE_WEEK_RESET_MIN=5)" 3 env GRIND_STOP_BEFORE_WEEK_RESET_MIN=5 GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$R" bash "$G/quota-gate.sh"
+expect_rc "quota-gate GO (week reset far, MIN=5)" 0 env GRIND_STOP_BEFORE_WEEK_RESET_MIN=1 GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$R" bash "$G/quota-gate.sh"
+rd 45 20 > "$R"
+expect_rc "quota-gate --next-window CHAIN"            0 QG --next-window
+expect_rc "quota-gate --next-window NO_CHAIN (until)" 3 env GRIND_HARD_STOP_AT=$((NOW + 1800)) GRIND_NOW=$NOW GRIND_QUOTA_READINGS="$R" bash "$G/quota-gate.sh" --next-window
+GJ set .claude/grind/state.json run_opts '{"chain": false}'
+expect_rc "quota-gate --next-window NO_CHAIN (--no-chain)" 3 QG --next-window
+GJ set .claude/grind/state.json run_opts '{}'
+printf 'import json\nprint(json.dumps({"five_hour_pct_left": 55, "week_pct_left": 80, "week_model_pct_left": None}))\n' > "$TMP/tool.py"
+expect_rc "quota-gate GO via GRIND_QUOTA_TOOL adapter" 0 env GRIND_QUOTA_TOOL="$TMP/tool.py" GRIND_QUOTA_READINGS="$TMP/none.jsonl" bash "$G/quota-gate.sh"
+printf 'raise SystemExit(1)\n' > "$TMP/tool.py"
+expect_rc "quota-gate POLL_FAILED via broken adapter" 6 env GRIND_QUOTA_TOOL="$TMP/tool.py" bash "$G/quota-gate.sh"
+u="$(GRIND_NOW=$NOW GJ resolve-until 23:59)"
+[ -n "$u" ] && ok "resolve-until HH:MM -> absolute ISO ($u)" || bad "resolve-until failed"
 
 # ---------- 5. scope-guard ----------
 echo z >> src/api/a.txt && git add src/api/a.txt
@@ -251,59 +287,13 @@ b="$(bash -c ". '$G/config.sh'; . '$G/lib.sh'; grind_base_branch")"
 b="$(GRIND_BASE_BRANCH=release bash -c ". '$G/config.sh'; . '$G/lib.sh'; grind_base_branch")"
 [ "$b" = "release" ] && ok "base branch: env/project.conf override" || bad "base branch override: got '$b'"
 
-# ---------- 13. quota tool resolution + per-OS pythons ----------
-tool="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
-case "$tool" in
-  */.claude/skills/quota/claude_usage.py) ok "quota tool: resolves to a skill path (no machine hardcode)";;
-  *) bad "quota tool: unexpected default '$tool'";;
-esac
-mkdir -p .claude/skills/quota && : > .claude/skills/quota/claude_usage.py
-tool="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
-[ "$tool" = "$TMP/r1/.claude/skills/quota/claude_usage.py" ] \
-  && ok "quota tool: repo-vendored copy wins" || bad "quota tool: vendored copy ignored ($tool)"
-rm -rf .claude/skills
-tool="$(GRIND_QUOTA_TOOL=/custom/path.py bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_TOOL\"")"
-[ "$tool" = "/custom/path.py" ] && ok "quota tool: env override honored" || bad "quota tool: env override ignored"
+# ---------- 13. quota source + python resolution ----------
+rp="$(HOME=/h bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_QUOTA_READINGS\"")"
+[ "$rp" = "/h/.claude/tools/cc-quota.readings.jsonl" ] && ok "quota source: statusline readings by default" || bad "quota source default '$rp'"
+hits="$(grep -lE 'claude_usage|\bpyte\b|GRIND_QUOTA_PYTHON|POLL_MIN_INTERVAL' "$SRC"/* 2>/dev/null | grep -v '/selftest$')"
+[ -z "$hits" ] && ok "law has no /usage poller dependency (no pyte, no claude_usage)" || bad "poller leftovers in: $hits"
 py="$(bash -c ". '$G/config.sh'; printf '%s' \"\$GRIND_PYTHON\"")"
 command -v "$py" >/dev/null 2>&1 && ok "GRIND_PYTHON resolves to a real interpreter ($py)" || bad "GRIND_PYTHON '$py' not on PATH"
-
-# ---------- 14. /usage parser: per-model weekly bar (no pyte, no session) ----------
-CU=""
-for c in "$SRC/../../skills/quota/claude_usage.py" "$SRC/../../../quota/claude_usage.py"; do
-  [ -f "$c" ] && CU="$c" && break
-done
-if [ -n "$CU" ]; then
-  if "$PYBIN" - "$CU" <<'PY' >/dev/null 2>&1
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("cu", sys.argv[1])
-cu = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(cu)   # must import WITHOUT pyte (lazy backend import)
-lines = [
-    "Current session (5-hour limit)",
-    "|||||| 37% used",
-    "Resets 6pm (Europe/Warsaw)",
-    "",
-    "Current week (all models)",
-    "|| 12% used",
-    "Resets Jul 13, 6pm (Europe/Warsaw)",
-    "",
-    "Current week (Fable)",
-    "|||| 44% used",
-    "Resets Jul 13, 6pm (Europe/Warsaw)",
-]
-s = cu.parse(lines)
-assert s["five_hour"]["pct_used"] == 37, s
-assert s["five_hour"]["resets"] == "6pm", s
-assert s["week_all"]["pct_used"] == 12, s
-assert s["week_fable"]["pct_used"] == 44, s
-assert s["week_fable"]["resets"] == "Jul 13, 6pm", s
-PY
-  then ok "usage parser: 5h + all-models + per-model (Fable) bars parsed"
-  else bad "usage parser: synthetic panel failed to parse"
-  fi
-else
-  echo "  skip- usage parser (claude_usage.py not found next to the law)"
-fi
 
 bash "$G/lock.sh" release >/dev/null 2>&1
 
