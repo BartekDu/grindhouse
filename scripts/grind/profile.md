@@ -30,6 +30,14 @@ it. A rule that stops paying rent is deleted here, nowhere else.
   commit bodies), so the founder reads reports without translating.
 - Paste excerpts of files that `wave-brief` lists as re-read, instead of
   letting each agent open them again.
+- Label every agent `build <id>`, `verify <id>`, `re-verify <id>` or
+  `fix <id>`, with the task id (`build T-17`), and nothing in front of the
+  verb. A verifier ends its report with a line of its own: `VERDICT: PASS` or
+  `VERDICT: FAIL`, nothing after the word (a Workflow agent with a schema
+  returns `pass` instead). cc-ledger `/ledger quality` reads only this
+  convention. Incident (grind-06-10-2026, cc-ledger): 54 tasks ran under
+  free-text labels (`T-17 Windows no-Git-Bash path`, `UX-C2 verifier`), so
+  the first-pass rate per model was not measured at all.
 
 ## Checks and gates the agents write
 
