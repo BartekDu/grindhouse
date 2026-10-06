@@ -51,6 +51,13 @@ it. A rule that stops paying rent is deleted here, nowhere else.
 - The verifier reads the changed documents too, not only code and test
   output: duplicated sections, stale numbers, copy-paste leftovers. Incident
   (V-16): duplicated KARTA sections passed code-only verification.
+- A mutation check never removes test isolation: the config dir, data dir,
+  HOME and temp-dir fixtures stay in place. Mutate only the code under test,
+  and run mutated suites in a copy of the repo whose isolation you checked
+  first. To show a test needs its isolation, use a fake home as the control,
+  never the real one. Incident (grind-06-10-2026, cc-ledger T-29): a mutation
+  dropped `CLAUDE_CONFIG_DIR` from the test helper, and the suite applied and
+  rolled back presets on the user's real `~/.claude/settings.json`.
 
 ## Waves
 
