@@ -3,7 +3,7 @@
 # Incident: the engine lived as two divergent per-machine forks (Windows +
 # Linux) with no shared proof; fixes landed on one side and silently regressed
 # or never reached the other. Every push/PR now runs the full guardrail matrix
-# (scripts/grind/selftest — throwaway repos, faked quota cache, zero network,
+# (scripts/grind/selftest — throwaway repos, fixture quota readings, zero network,
 # zero Claude auth, zero quota spend) on ubuntu + windows git-bash.
 #
 # windows-latest notes: `shell: bash` = git-bash (MSYS) — the same environment

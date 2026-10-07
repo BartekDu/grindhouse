@@ -9,6 +9,15 @@ through here. Stdlib only. Subcommands:
   incr  STATE DOTTED.PATH [BY]             integer increment (default +1, atomic)
   focus-globs STATE allowed|forbidden      print the focus glob list, one per line
   quota-parse                              read tool JSON on stdin -> "FH WK WM" (WM=-1 if absent; exit 1 if unparseable)
+  quota-read READINGS MAX_AGE [HARD_STOP_AT] [STOP_BEFORE_WEEK_RESET_MIN]
+                                           newest reading (any source) -> "FH WK WM AGE HS SRC"
+                                           (exit 1 + "FAIL <reason>" when missing / stale / past the 5h reset)
+  hard-stop HARD_STOP_AT                   print "0" or "hard_stop_at" (for the GRIND_QUOTA_TOOL adapter)
+  next-window READINGS [HARD_STOP_AT] [STOP_BEFORE_WEEK_RESET_MIN]
+                                           "CHAIN <epoch> <local-iso>" (next 5h reset) or "NO_CHAIN <reason>" (exit 3)
+  resolve-until HH:MM|ISO                  absolute local ISO time of the next HH:MM (for state.json .run_opts)
+  deadline [MINUTES]                       UTC time MINUTES (default 10) from now, for a brief's hard deadline
+  wave-brief CC_BRIEF_PY                   advisory budget lines from cc-brief --latest --json (exit 0 always)
   cache-write FILE FH WK [WM]              write {five_hour_pct_left,week_pct_left,week_model_pct_left,ts}
   cache-read  FILE                         print "FH WK WM TS"
   audit-append FILE EVENT [DATA]           append a hash-chained audit line
@@ -18,9 +27,11 @@ through here. Stdlib only. Subcommands:
 
 import hashlib
 import json
+import math
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
 
 def _load(p):
@@ -40,6 +51,244 @@ def _atomic_write(p, text):
 
 def _iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+# --- quota from statusline readings ------------------------------------------
+# cc-statusline.py (cc-ledger) appends one JSON object per line to
+# ~/.claude/tools/cc-quota.readings.jsonl: {"t": epoch, "five_hour_used": pct,
+# "five_hour_resets_at": epoch, "week_used": pct, "week_resets_at": epoch, ...}
+# plus an OPTIONAL "week_model_used" (per-model weekly bar). All date math is
+# here, in Python, so the gate behaves the same under git-bash on Windows
+# (no GNU date).
+
+
+def _now():
+    """Epoch seconds; GRIND_NOW pins it for tests."""
+    v = os.environ.get("GRIND_NOW", "").strip()
+    return float(v) if v else time.time()
+
+
+def _epoch(v):
+    """Epoch from a number, a numeric string or an ISO-8601 string; None if unparseable."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()  # naive = local time
+    except ValueError:
+        return None
+
+
+def _hard_stop_epoch(spec, now):
+    """GRIND_HARD_STOP_AT -> epoch. Accepts ISO / epoch, or HH:MM meaning that
+    local time TODAY (resolve-until turns a launch-time HH:MM into an absolute
+    ISO so later windows do not roll it to the next day). Comma-separated
+    values: the earliest wins. None if empty or unparseable."""
+    best = None
+    for part in str(spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        e = None
+        if len(part) <= 5 and ":" in part:
+            try:
+                hh, mm = (int(x) for x in part.split(":"))
+                base = datetime.fromtimestamp(now)
+                e = base.replace(hour=hh, minute=mm, second=0, microsecond=0).timestamp()
+            except ValueError:
+                e = None
+        else:
+            e = _epoch(part)
+        if e is not None and (best is None or e < best):
+            best = e
+    return best
+
+
+def _readings(path):
+    """Valid records from the tail of the readings file. Corrupt or partial lines
+    are skipped. Raises OSError if the file is missing."""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        f.seek(max(0, f.tell() - 65536))
+        lines = f.read().splitlines()
+    out = []
+    for ln in lines:
+        try:
+            o = json.loads(ln.decode("utf-8"))
+            float(o["t"]), float(o["five_hour_used"]), float(o["week_used"])
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            continue
+        out.append(o)
+    return out
+
+
+def _latest_reading(path, with_model=False):
+    """Record with the greatest `t` (concurrent sessions can interleave lines, so the
+    last line is not always the newest). with_model=True: only records that carry
+    "week_model_used" count."""
+    best = None
+    for o in _readings(path):
+        if with_model and o.get("week_model_used") is None:
+            continue
+        if best is None or float(o["t"]) > float(best["t"]):
+            best = o
+    return best
+
+
+NEAR_SEC = 30   # readings this close to the newest one describe the same moment
+
+
+def _worst_used(path, r, key):
+    """The highest `key` among readings within NEAR_SEC of r from the same 5h window.
+    The status line and the probe round differently (seen: week 2% vs 3% 0.2 s apart);
+    the gate takes the worse value."""
+    best = float(r[key]); t = float(r["t"]); fr = _epoch(r.get("five_hour_resets_at"))
+    for o in _readings(path):
+        if abs(float(o["t"]) - t) > NEAR_SEC:
+            continue
+        of = _epoch(o.get("five_hour_resets_at"))
+        if fr is not None and of is not None and abs(of - fr) > 300:
+            continue
+        best = max(best, float(o[key]))
+    return best
+
+
+def _left(used):
+    """percent used -> integer percent left, rounded DOWN (conservative)."""
+    return max(0, int(math.floor(100 - float(used))))
+
+
+def _stop_reason(now, hard_stop_at, week_resets_at, before_min):
+    hs = _hard_stop_epoch(hard_stop_at, now)
+    if hs is not None and now >= hs:
+        return "hard_stop_at"
+    wr = _epoch(week_resets_at)
+    if wr is not None and str(before_min or "").strip():
+        try:
+            if now >= wr - float(before_min) * 60:
+                return "week_reset"
+        except ValueError:
+            pass
+    return "0"
+
+
+def _quota_read(argv):
+    path, max_age = argv[0], float(argv[1])
+    hard_stop_at = argv[2] if len(argv) > 2 else ""
+    before_min = argv[3] if len(argv) > 3 else ""
+    now = _now()
+    try:
+        r = _latest_reading(path)
+    except OSError:
+        return "FAIL no readings file " + path, 1
+    if r is None:
+        return "FAIL no valid reading in " + path, 1
+    age = int(now - float(r["t"]))
+    if age > max_age:
+        return f"FAIL stale reading age={age}s (max {int(max_age)}s)", 1
+    fr = _epoch(r.get("five_hour_resets_at"))
+    if fr is not None and now >= fr:
+        return "FAIL reading predates the 5h reset", 1
+    fh, wk = _left(_worst_used(path, r, "five_hour_used")), _left(_worst_used(path, r, "week_used"))
+    wm = r.get("week_model_used")
+    if wm is None:
+        # The status line has no per-model bar; the probe (source=oauth) has. Carry the
+        # newest fresh per-model value from the same week (resets_at jitters by ~1 s).
+        m = _latest_reading(path, with_model=True)
+        mr, rr = _epoch((m or {}).get("week_resets_at")), _epoch(r.get("week_resets_at"))
+        if m is not None and now - float(m["t"]) <= max_age and (
+                mr is None or rr is None or abs(mr - rr) <= 300):
+            wm = m.get("week_model_used")
+    try:
+        wm = -1 if wm is None else _left(wm)
+    except (ValueError, TypeError):
+        wm = -1
+    hs = _stop_reason(now, hard_stop_at, r.get("week_resets_at"), before_min)
+    # who wrote it: "statusline" (cc-statusline.py) or "oauth" (cc-usage-probe.py); one safe word for the audit line
+    src = "".join(c for c in str(r.get("source") or "") if c.isalnum() or c in "_-")[:16] or "statusline"
+    return f"{fh} {wk} {wm} {max(age, 0)} {hs} {src}", 0
+
+
+def _next_window(argv):
+    path = argv[0]
+    hard_stop_at = argv[1] if len(argv) > 1 else ""
+    before_min = argv[2] if len(argv) > 2 else ""
+    now = _now()
+    try:
+        r = _latest_reading(path)
+    except OSError:
+        r = None
+    if r is None:
+        return "NO_CHAIN no reading", 3
+    fr = _epoch(r.get("five_hour_resets_at"))
+    if fr is None:            # null in the contract: any 5h window open now has reset 5h from now
+        fr = now + 5 * 3600
+    while fr <= now:          # reading predates a reset: next one is 5h later
+        fr += 5 * 3600
+    start = fr + 120          # start just after the reset, never on it
+    if _stop_reason(start, hard_stop_at, r.get("week_resets_at"), before_min) != "0":
+        why = _stop_reason(start, hard_stop_at, r.get("week_resets_at"), before_min)
+        return f"NO_CHAIN next window would start after {why}", 3
+    iso = datetime.fromtimestamp(start).astimezone().isoformat(timespec="minutes")
+    return f"CHAIN {int(start)} {iso}", 0
+
+
+def _resolve_until(spec):
+    now = _now()
+    s = spec.strip()
+    if len(s) <= 5 and ":" in s:
+        hh, mm = (int(x) for x in s.split(":"))
+        base = datetime.fromtimestamp(now)
+        t = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if t.timestamp() <= now:
+            t += timedelta(days=1)
+        return t.astimezone().isoformat(timespec="minutes")
+    e = _epoch(s)
+    if e is None:
+        raise ValueError(spec)
+    return datetime.fromtimestamp(e).astimezone().isoformat(timespec="minutes")
+
+
+def _wave_brief(tool):
+    """Advisory lines from cc-ledger's cc-brief for the newest session of this
+    project (Claude Code keeps it in ~/.claude/projects/<cwd with every
+    non-alphanumeric as '-'>; falls back to the newest session anywhere)."""
+    import re
+    import subprocess
+    if not os.path.isfile(tool):
+        return ["wave-brief: skipped (no cc-brief at %s; advisory only)" % tool]
+    pdir = os.path.join(os.path.expanduser("~"), ".claude", "projects",
+                        re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
+    cmd = [sys.executable, tool, "--latest"] + ([pdir] if os.path.isdir(pdir) else []) + ["--json"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120).stdout
+        b = json.loads(out)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ["wave-brief: skipped (cc-brief gave no JSON; advisory only)"]
+    w = b.get("window") or {}
+    head = "wave-brief (advisory): spent $%.2f (agents $%.2f over %s agents)" % (
+        b.get("spent_usd") or 0, b.get("agents_usd") or 0, b.get("agents") or 0)
+    if w:
+        head += " | 5h %s%% used, resets in %s min" % (w.get("five_hour_used"), w.get("resets_in_min"))
+        if w.get("usd_left") is not None:
+            head += ", ~$%.0f left" % w["usd_left"]
+    lines = [head]
+    for a in b.get("big_agents") or []:
+        if (a.get("requests") or 0) > 100:
+            lines.append("  big agent: %s, %s requests, $%.2f -> split such tasks, paste excerpts into the brief"
+                         % (a.get("label") or "?", a.get("requests"), a.get("usd") or 0))
+    for f in (b.get("reread_files") or [])[:5]:
+        lines.append("  re-read %sx: %s -> paste the needed excerpt into the next brief"
+                     % (f.get("reads"), f.get("file")))
+    return lines
 
 
 def main(argv):
@@ -107,6 +356,34 @@ def main(argv):
         wm = o.get("week_model_pct_left")
         wm = -1 if wm is None else int(wm)
         print(f"{int(fh)} {int(wk)} {wm}")
+
+    elif cmd == "quota-read":
+        out, rc = _quota_read(argv[1:])
+        print(out)
+        sys.exit(rc)
+
+    elif cmd == "hard-stop":
+        print(_stop_reason(_now(), argv[1] if len(argv) > 1 else "", None, ""))
+
+    elif cmd == "next-window":
+        out, rc = _next_window(argv[1:])
+        print(out)
+        sys.exit(rc)
+
+    elif cmd == "resolve-until":
+        try:
+            print(_resolve_until(argv[1]))
+        except (ValueError, IndexError):
+            print("")
+            sys.exit(1)
+
+    elif cmd == "deadline":
+        m = float(argv[1]) if len(argv) > 1 else 10.0
+        print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(_now() + m * 60)))
+
+    elif cmd == "wave-brief":
+        for ln in _wave_brief(argv[1] if len(argv) > 1 else ""):
+            print(ln)
 
     elif cmd == "cache-write":
         _atomic_write(

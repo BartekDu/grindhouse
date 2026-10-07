@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# wave-brief — ADVISORY budget brief before each dispatch wave.
+#
+# Runs cc-ledger's cc-brief (--latest --json) for this project's newest
+# session and prints a few lines: spend, window $ left, agents that grew past
+# 100 requests, files read over and over; first the absolute UTC deadline
+# (now + GRIND_TASK_DEADLINE_MIN) to write into each task brief. It never blocks: the quota floor is
+# quota-gate's job. Exit 0 always (missing tool = one "skipped" line).
+#
+# Act on it: split work an over-100-request agent was doing; paste the needed
+# excerpt of a re-read file into the next brief instead of letting each agent
+# re-read it. Override the tool with GRIND_BRIEF_TOOL.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"; cd "$ROOT" || exit 0
+. "$HERE/config.sh"
+tool="${GRIND_BRIEF_TOOL:-$HOME/.claude/tools/cc-brief.py}"
+cd "$GRIND_MAIN_ROOT" 2>/dev/null || true
+echo "task deadline for this wave's briefs (UTC): $(grind_gj deadline "$GRIND_TASK_DEADLINE_MIN")"
+grind_gj wave-brief "$tool" || true
+exit 0

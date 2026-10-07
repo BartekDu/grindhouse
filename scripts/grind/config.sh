@@ -11,13 +11,17 @@ GRIND_FLOOR_5H_PCT=10            # stop the window when five_hour_pct_left <= th
 GRIND_HARD_STOP_WEEK_PCT=10     # weekly hard-stop: do NOT chain another window
 GRIND_HARD_STOP_WEEK_MODEL_PCT=10  # per-model weekly hard-stop (week_model_pct_left, e.g. "Current
                                 # week (Fable)"). That bar usually exhausts FIRST; before 2026-07-10
-                                # the gate was blind to it — a Fable grind could burn the model week
-                                # while the all-models bar looked fine.
+                                # the gate was blind to it. DORMANT unless the reading carries the
+                                # optional week_model_used field (the statusline does not always
+                                # get it) — Step 0 has the operator check /usage by hand once.
 GRIND_RESERVE_BUFFER_PCT=5      # stop ACCEPTING new tasks at floor+buffer (15%)
 GRIND_MAX_WINDOWS=8             # auto-chain cap: founder-authorized 2026-06-03 for the v0.5-mobile
                                 # self-chaining campaign (was 3). Weekly hard-stop is the real brake.
 GRIND_MAX_CONCURRENT=4         # fan-out cap: parallel feature-builders per window (disjoint scope each)
-GRIND_POLL_MIN_INTERVAL_SEC=600 # rate-limit /quota polls; reuse cached reading within this window
+GRIND_TASK_DEADLINE_MIN=10      # one builder task = one commit within this many minutes (savepoint);
+                                # wave-brief prints the absolute UTC deadline for the briefs
+GRIND_READING_MAX_AGE_SEC="${GRIND_READING_MAX_AGE_SEC:-900}"   # (env or project.conf override) a reading older than this is stale (the gate runs GRIND_QUOTA_PROBE once, else POLL_FAILED);
+                                # the statusline re-records unchanged meters every 5 min while it runs
 
 # --- main-root anchor (define BEFORE the overrides + paths that use it) ---
 # A campaign has ONE state tree, at the MAIN worktree root. Builders run in
@@ -53,6 +57,14 @@ GRIND_MAIN_ROOT="$(grind_main_root)"
 #                                       # (enforced only while a grind window is active)
 #   GRIND_EXTRA_IGNORES="db.sqlite3 out/cache/"   # extra hygiene-check .gitignore entries
 #   GRIND_VALUE_EXTRA_RE='PROJ-[0-9]+'  # extra value-gate objective-win id regex
+#   GRIND_HARD_STOP_AT="2026-10-05T17:55+02:00"  # campaign hard stop (ISO, or HH:MM = today);
+#                                       # from then on the gate answers STOP_WEEKLY (no chain)
+#   GRIND_STOP_BEFORE_WEEK_RESET_MIN=5  # STOP_WEEKLY this many minutes before the weekly reset
+#   GRIND_QUOTA_READINGS=/path/x.jsonl  # statusline readings file (default below)
+#   GRIND_QUOTA_PROBE="/path/probe.py --write"  # refresh a stale reading once (default: cc-usage-probe.py if
+#                                       # installed; set empty to turn the probe off)
+#   GRIND_QUOTA_TOOL=/path/tool.py      # optional adapter: a command printing the old
+#                                       # {five_hour_pct_left, week_pct_left, week_model_pct_left} JSON
 # Verification gates live in <repo>/.claude/grind/verify-cmds (see verify-run).
 # Example conf for the Underline repo: docs/examples/underline.project.conf.
 if [ -f "$GRIND_MAIN_ROOT/.claude/grind/project.conf" ]; then
@@ -73,54 +85,40 @@ GRIND_ACTIVE="${GRIND_DIR}/.active"        # present only while a window is runn
 GRIND_LOCK="${GRIND_DIR}/.lock"            # single-run lock dir (mkdir is atomic)
 GRIND_QUOTA_CACHE="${GRIND_DIR}/.quota-cache.json"
 
-# --- external tools ---
-# !!! GRIND ENV TRAP !!! Two roles, resolved per-OS (override via env or
-# project.conf for exotic setups — e.g. WSL driving a Windows-side claude
-# needs GRIND_QUOTA_PYTHON=python.exe):
-#   GRIND_PYTHON       runs grindjson.py -> the current shell's native python
-#                      (git-bash `python`, Linux/macOS `python3`).
-#   GRIND_QUOTA_PYTHON runs the quota tool (imports `pyte`) -> the python that
-#                      has pyte installed. On Windows that was the Windows
-#                      python only; on Linux one python3 serves both roles
-#                      (`python3 -m pip install --user pyte`).
-# Getting this wrong fails the gate closed (POLL_FAILED) and no grind can start.
-case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
-  msys*|cygwin*|MINGW*|MSYS*)   # git-bash on Windows: `python` is the Windows python
-    if [ -z "${GRIND_PYTHON:-}" ]; then
-      if command -v python >/dev/null 2>&1; then GRIND_PYTHON="python"
-      elif command -v python3 >/dev/null 2>&1; then GRIND_PYTHON="python3"
-      else GRIND_PYTHON="python"; fi
-    fi
-    if [ -z "${GRIND_QUOTA_PYTHON:-}" ]; then
-      if command -v python >/dev/null 2>&1; then GRIND_QUOTA_PYTHON="python"
-      elif command -v python.exe >/dev/null 2>&1; then GRIND_QUOTA_PYTHON="python.exe"
-      else GRIND_QUOTA_PYTHON="$GRIND_PYTHON"; fi
-    fi
-    ;;
-  *)                            # Linux / macOS / WSL shells: python3 first
-    if [ -z "${GRIND_PYTHON:-}" ]; then
-      if command -v python3 >/dev/null 2>&1; then GRIND_PYTHON="python3"
-      elif command -v python >/dev/null 2>&1; then GRIND_PYTHON="python"
-      else GRIND_PYTHON="python3"; fi
-    fi
-    if [ -z "${GRIND_QUOTA_PYTHON:-}" ]; then
-      if command -v python3 >/dev/null 2>&1; then GRIND_QUOTA_PYTHON="python3"
-      elif command -v python >/dev/null 2>&1; then GRIND_QUOTA_PYTHON="python"
-      elif command -v python.exe >/dev/null 2>&1; then GRIND_QUOTA_PYTHON="python.exe"
-      else GRIND_QUOTA_PYTHON="$GRIND_PYTHON"; fi
-    fi
-    ;;
-esac
-# Quota tool: repo-vendored copy wins (main root), else the installed skill —
-# no machine-specific default path (the old C:/Users/... default was one
-# machine's desktop; every other machine failed the gate closed). Override
-# with GRIND_QUOTA_TOOL=... (env or project.conf) to point elsewhere.
-if [ -z "${GRIND_QUOTA_TOOL:-}" ]; then
-  if [ -f "$GRIND_MAIN_ROOT/.claude/skills/quota/claude_usage.py" ]; then
-    GRIND_QUOTA_TOOL="$GRIND_MAIN_ROOT/.claude/skills/quota/claude_usage.py"
-  else
-    GRIND_QUOTA_TOOL="$HOME/.claude/skills/quota/claude_usage.py"
-  fi
+# --- quota source ---
+# The gate reads the meters Claude Code hands the status line, as recorded by
+# cc-ledger's cc-statusline.py (one JSON reading per line; contract in
+# grindjson.py quota-read). No nested `claude /usage` poll any more: it needed
+# a terminal-emulator module, a second python on Windows, and hung on the folder-trust dialog in new
+# folders. Override per repo in project.conf.
+GRIND_QUOTA_READINGS="${GRIND_QUOTA_READINGS:-$HOME/.claude/tools/cc-quota.readings.jsonl}"
+GRIND_HARD_STOP_AT="${GRIND_HARD_STOP_AT:-}"                 # empty = no campaign hard stop
+GRIND_STOP_BEFORE_WEEK_RESET_MIN="${GRIND_STOP_BEFORE_WEEK_RESET_MIN:-}"   # empty = off
+GRIND_QUOTA_TOOL="${GRIND_QUOTA_TOOL:-}"                     # empty = statusline readings
+# Probe: when the newest reading is missing / stale / from before the 5h reset (the case that
+# fails safe to POLL_FAILED), the gate runs this ONCE, then re-reads the readings once. It is
+# cc-ledger's cc-usage-probe.py, which asks the endpoint /usage uses and appends a source="oauth"
+# reading (no quota spent; works headless and right after a 5h reset). "<script> --write": a
+# script ending in .py runs with GRIND_PYTHON; the gate adds `--readings $GRIND_QUOTA_READINGS`
+# (a custom probe must accept it) and ignores any failure. Unset = that script if it exists;
+# set EMPTY (env or project.conf) = off.
+if [ "${GRIND_QUOTA_PROBE+set}" != "set" ]; then
+  GRIND_QUOTA_PROBE=""
+  [ -f "$HOME/.claude/tools/cc-usage-probe.py" ] && GRIND_QUOTA_PROBE="$HOME/.claude/tools/cc-usage-probe.py --write"
+fi
+
+# --- python ---
+# grindjson.py (stdlib only) runs on the current shell's native python:
+# git-bash on Windows -> `python`, Linux/macOS/WSL -> `python3`.
+if [ -z "${GRIND_PYTHON:-}" ]; then
+  case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|MINGW*|MSYS*) _gp="python python3" ;;
+    *)                          _gp="python3 python" ;;
+  esac
+  for _p in $_gp; do
+    if command -v "$_p" >/dev/null 2>&1; then GRIND_PYTHON="$_p"; break; fi
+  done
+  GRIND_PYTHON="${GRIND_PYTHON:-python3}"; unset _gp _p
 fi
 
 # Local git-bash has python but NOT jq, so all JSON ops route through grindjson.py.
